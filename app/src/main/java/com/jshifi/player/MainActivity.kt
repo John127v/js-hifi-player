@@ -33,6 +33,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -109,9 +110,9 @@ class MainActivity : ComponentActivity() {
             var pos by remember { mutableStateOf(0L) }
             var dur by remember { mutableStateOf(0L) }
             
-            var fftValues by remember { mutableStateOf(FloatArray(15) { 0.05f }) }
-            var vuLeft by remember { mutableStateOf(0.05f) }
-            var vuRight by remember { mutableStateOf(0.05f) }
+            var fftValues by remember { mutableStateOf(FloatArray(15) { 0.02f }) }
+            var vuLeft by remember { mutableStateOf(0.02f) }
+            var vuRight by remember { mutableStateOf(0.02f) }
             var volume by remember { mutableStateOf(0.8f) }
             var highGain by remember { mutableStateOf(false) }
             var showEq by remember { mutableStateOf(false) }
@@ -164,11 +165,12 @@ class MainActivity : ComponentActivity() {
                                             val s = (bytes[i].toInt() and 0xFF) - 128
                                             sumR += s * s
                                         }
-                                        val rmsL = Math.sqrt(sumL / half) / 128.0
-                                        val rmsR = Math.sqrt(sumR / half) / 128.0
+                                        val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat()
+                                        val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat()
                                         
-                                        vuLeft = (vuLeft * 0.2f + rmsL.toFloat() * 0.8f).coerceIn(0.001f, 1.2f)
-                                        vuRight = (vuRight * 0.2f + rmsR.toFloat() * 0.8f).coerceIn(0.001f, 1.2f)
+                                        // Filtro de amortecimento do VU (reduz resposta brusca)
+                                        vuLeft = vuLeft + 0.08f * (rmsL - vuLeft)
+                                        vuRight = vuRight + 0.08f * (rmsR - vuRight)
                                     }
                                 }
 
@@ -180,8 +182,18 @@ class MainActivity : ComponentActivity() {
                                             val r = bytes[2 * i].toInt()
                                             val im = bytes[2 * i + 1].toInt()
                                             val mag = hypot(r.toDouble(), im.toDouble()).toFloat()
-                                            val multiplier = if (i < 4) 2.2f else 1.2f
-                                            bands15[i] = ((mag * multiplier) / 30f).coerceIn(0.05f, 1.0f)
+                                            
+                                            // Reduzido o ganho e atenuação para evitar saturação do espectro
+                                            val multiplier = if (i < 3) 0.6f else if (i < 8) 0.8f else 1.0f
+                                            val rawTarget = ((mag * multiplier) / 60f).coerceIn(0.01f, 1.0f)
+                                            
+                                            // Suavização da queda (decay) para efeito suave estilo LED
+                                            val currentVal = fftValues.getOrElse(i) { 0.01f }
+                                            bands15[i] = if (rawTarget > currentVal) {
+                                                currentVal + 0.25f * (rawTarget - currentVal)
+                                            } else {
+                                                currentVal - 0.08f * (currentVal - rawTarget)
+                                            }.coerceIn(0.01f, 1.0f)
                                         }
                                         fftValues = bands15
                                     }
@@ -353,7 +365,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Box(Modifier.fillMaxSize().background(bgDark)) {
                     Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // Header Bar
+                        // Header Bar com botão de Fechar App
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -372,17 +384,24 @@ class MainActivity : ComponentActivity() {
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Text(
-                                        "‹",
+                                        "☰",
                                         color = cyanNeon,
-                                        fontSize = 28.sp,
+                                        fontSize = 22.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.clickable { showMenu = true }
                                     )
                                     Text("JS HIFI PLAYER", color = cyanNeon, fontSize = 18.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text("⚙", color = cyanNeon, fontSize = 18.sp, modifier = Modifier.clickable { showEq = !showEq })
-                                    Text("▅▇▆", color = cyanNeon, fontSize = 16.sp)
+                                    // Botão Fechar App no cabeçalho
+                                    Text(
+                                        "✕",
+                                        color = Color(0xFFFF5252),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable { finishAffinity() }
+                                    )
                                 }
                             }
                         }
@@ -450,7 +469,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Spectrum Analyzer
+                        // Espectro estilo MicroLED Matrix com cores parametrizadas
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -460,22 +479,47 @@ class MainActivity : ComponentActivity() {
                                 .padding(8.dp)
                         ) {
                             Column {
-                                Text("SPECTRUM ANALYZER • 15 BANDS", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Text("MICROLED SPECTRUM ANALYZER", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
                                 Spacer(Modifier.height(6.dp))
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
-                                        .height(90.dp)
+                                        .height(100.dp)
                                         .clip(RoundedCornerShape(6.dp))
-                                        .background(Color(0xFF080A0F))
+                                        .background(Color(0xFF05070B))
                                 ) {
                                     Canvas(Modifier.fillMaxSize()) {
-                                        val barW = size.width / fftValues.size
-                                        fftValues.forEachIndexed { i, h ->
-                                            val x = i * barW
-                                            val bh = size.height * h.coerceIn(0.05f, 1f)
-                                            val col = if (h > 0.85f) Color.Red else if (h > 0.65f) Color.Yellow else cyanNeon
-                                            drawRect(col, topLeft = Offset(x + 2, size.height - bh), size = Size(barW - 4, bh))
+                                        val bands = fftValues.size
+                                        val totalLedsHeight = 20 // 20 segmentos de MicroLED por coluna
+                                        val colWidth = size.width / bands
+                                        val ledSpacingY = 2f
+                                        val ledSpacingX = 3f
+                                        val ledHeight = (size.height - (totalLedsHeight * ledSpacingY)) / totalLedsHeight
+
+                                        fftValues.forEachIndexed { bandIdx, amp ->
+                                            val x = bandIdx * colWidth
+                                            val activeLeds = (amp.coerceIn(0.01f, 1.0f) * totalLedsHeight).toInt()
+
+                                            for (ledIdx in 0 until totalLedsHeight) {
+                                                val y = size.height - ((ledIdx + 1) * (ledHeight + ledSpacingY))
+                                                val ledPercent = (ledIdx + 1).toFloat() / totalLedsHeight.toFloat()
+                                                val isActive = ledIdx < activeLeds
+
+                                                // Definindo as cores com base na porcentagem de altura pedida
+                                                val ledColor = when {
+                                                    !isActive -> Color(0xFF101620) // LED desligado
+                                                    ledPercent <= 0.40f -> Color(0xFF00E676) // Verde (0 - 40%)
+                                                    ledPercent <= 0.709f -> Color(0xFFFF9100) // Laranja (40.1% - 70.9%)
+                                                    else -> Color(0xFFFF1744) // Vermelho (71% - 100%)
+                                                }
+
+                                                drawRoundRect(
+                                                    color = ledColor,
+                                                    topLeft = Offset(x + ledSpacingX, y),
+                                                    size = Size(colWidth - (ledSpacingX * 2), ledHeight),
+                                                    cornerRadius = CornerRadius(2f, 2f)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -484,7 +528,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Modos de Reprodução & Botões de Controle (Anterior, Play/Pause, Próxima)
+                        // Modos de Reprodução & Botões de Controle
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -693,6 +737,7 @@ class MainActivity : ComponentActivity() {
                                     ) {
                                         Text("📂 Todas as músicas", fontSize = 14.sp)
                                     }
+                                    Spacer(Modifier.height(8.dp))
                                     Button(
                                         onClick = {
                                             showDirBrowser = true
@@ -702,9 +747,21 @@ class MainActivity : ComponentActivity() {
                                     ) {
                                         Text("📁 Abrir Diretório", fontSize = 14.sp)
                                     }
+                                    
                                     Spacer(Modifier.weight(1f))
-                                    TextButton(onClick = { showMenu = false }) {
-                                        Text("FECHAR", fontSize = 14.sp)
+                                    
+                                    // Botão de Fechar Aplicativo no Menu
+                                    Button(
+                                        onClick = { finishAffinity() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("🚪 Sair do Aplicativo", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    
+                                    Spacer(Modifier.height(8.dp))
+                                    TextButton(onClick = { showMenu = false }, modifier = Modifier.fillMaxWidth()) {
+                                        Text("FECHAR MENU", color = Color.Gray, fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -800,7 +857,7 @@ fun MarqueeRender(text: String) {
 
 @Composable
 fun VUMeterRender(level: Float, label: String) {
-    val animLevel by animateFloatAsState(targetValue = level, animationSpec = tween(40), label = "vu")
+    val animLevel by animateFloatAsState(targetValue = level, animationSpec = tween(60), label = "vu")
     Box(
         Modifier
             .size(132.dp)
@@ -878,10 +935,12 @@ fun BargraphSegmented(level: Float, label: String) {
                     for (i in 0 until segments) {
                         val x = i * segW
                         val isActive = i < activeSegs
+                        val segPercent = (i + 1).toFloat() / segments.toFloat()
+                        
                         val col = when {
-                            !isActive -> Color(0xFF1A2330)
-                            i < segments * 0.70 -> Color(0xFF00E676)
-                            i < segments * 0.85 -> Color(0xFFFFEB3B)
+                            !isActive -> Color(0xFF141A24)
+                            segPercent <= 0.40f -> Color(0xFF00E676)
+                            segPercent <= 0.709f -> Color(0xFFFF9100)
                             else -> Color(0xFFFF1744)
                         }
                         drawRect(col, topLeft = Offset(x + 1, 2f), size = Size(segW - 2, size.height - 4f))
