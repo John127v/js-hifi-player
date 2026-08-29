@@ -10,29 +10,26 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Permissão obrigatória caso você utilize a API nativa do Visualizer do Android -->
+    <!-- Permissão para a API Visualizer -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Permissão para manter a execução em segundo plano (se criar um Foreground Service no futuro) -->
+    <!-- Permissões para execução em segundo plano -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:label="JS HiFi Player"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.JSHiFiPlayer"
+        android:theme="@android:style/Theme.DeviceDefault"
         tools:targetApi="34">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="JS HiFi Player"
-            android:theme="@style/Theme.JSHiFiPlayer">
+            android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
