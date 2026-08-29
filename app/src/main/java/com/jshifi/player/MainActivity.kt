@@ -9,24 +9,17 @@ import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.Visualizer
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
+import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,7 +31,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,10 +45,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.log10
-import kotlin.math.sin
 
 enum class RepeatMode { OFF, ALL, ONE }
 
@@ -70,6 +58,9 @@ data class SongTags(
     val format: String
 )
 
+data class Playlist(val name: String, val filePaths: MutableList<String>)
+
+// Busca as tags de áudio de maneira segura sem travar o app
 suspend fun getTags(file: File): SongTags = withContext(Dispatchers.IO) {
     var mmr: MediaMetadataRetriever? = null
     try {
@@ -88,6 +79,36 @@ suspend fun getTags(file: File): SongTags = withContext(Dispatchers.IO) {
     }
 }
 
+// Lê arquivos do diretório de forma ordenada e depois entra nos subdiretórios
+fun criarFilaDeReproducao(diretorioAtual: File): List<File> {
+    val filaDeReproducao = mutableListOf<File>()
+    val itens = diretorioAtual.listFiles() ?: return emptyList()
+
+    val arquivosDeMusica = mutableListOf<File>()
+    val subdiretorios = mutableListOf<File>()
+    val formatosSuportados = setOf("mp3", "flac", "wav", "m4a", "ogg")
+
+    for (item in itens) {
+        if (item.name.startsWith(".")) continue
+        if (item.isDirectory) {
+            subdiretorios.add(item)
+        } else if (formatosSuportados.contains(item.extension.lowercase())) {
+            arquivosDeMusica.add(item)
+        }
+    }
+
+    arquivosDeMusica.sortBy { it.name.lowercase() }
+    subdiretorios.sortBy { it.name.lowercase() }
+
+    filaDeReproducao.addAll(arquivosDeMusica)
+
+    for (subPasta in subdiretorios) {
+        filaDeReproducao.addAll(criarFilaDeReproducao(subPasta))
+    }
+
+    return filaDeReproducao
+}
+
 class MainActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
     private var eq: Equalizer? = null
@@ -98,863 +119,273 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         player = ExoPlayer.Builder(this).build()
 
-        val prefs = getSharedPreferences("JS_HIFI_PREFS", Context.MODE_PRIVATE)
-
         setContent {
             val ctx = LocalContext.current
             val scope = rememberCoroutineScope()
 
-            var songs by remember { mutableStateOf(listOf<File>()) }
+            var currentPlaylistView by remember { mutableStateOf(listOf<File>()) }
             var idx by remember { mutableStateOf(-1) }
             var isPlay by remember { mutableStateOf(false) }
             var pos by remember { mutableStateOf(0L) }
             var dur by remember { mutableStateOf(0L) }
             
-            var fftValues by remember { mutableStateOf(FloatArray(15) { 0.02f }) }
-            var vuLeft by remember { mutableStateOf(0.02f) }
-            var vuRight by remember { mutableStateOf(0.02f) }
-            var volume by remember { mutableStateOf(0.8f) }
-            var highGain by remember { mutableStateOf(false) }
-            var showEq by remember { mutableStateOf(false) }
-            var showMenu by remember { mutableStateOf(false) }
-            var showDirBrowser by remember { mutableStateOf(false) }
-            var vuModeAnalog by remember { mutableStateOf(true) }
+            val fftValues by remember { mutableStateOf(FloatArray(15) { 0.02f }) }
+            var currentTags by remember { mutableStateOf(SongTags("JS HIFI PLAYER", "Selecione uma pasta/faixa", "-", "-", "-", "-", "-")) }
             
-            var currentDir by remember { mutableStateOf(File("/storage/emulated/0/Music")) }
-            var dirFiles by remember { mutableStateOf(listOf<File>()) }
-            val eqLevels = remember { mutableStateListOf(0, 0, 0, 0, 0) }
-            
-            var repeatMode by remember { mutableStateOf(RepeatMode.ALL) }
-            var shuffleMode by remember { mutableStateOf(false) }
-            var shuffleQueue by remember { mutableStateOf(listOf<Int>()) }
-            var shufflePos by remember { mutableStateOf(0) }
-            var currentTags by remember { mutableStateOf(SongTags("JS HIFI PLAYER", "Selecione uma faixa", "-", "-", "-", "-", "-")) }
+            val currentDir by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
 
-            fun releaseAudioEffects() {
-                try {
-                    viz?.enabled = false
-                    viz?.release()
-                    viz = null
-                    eq?.release()
-                    eq = null
-                    loud?.release()
-                    loud = null
-                } catch (_: Exception) {}
-            }
-
-            fun setupAudioEffects(sessionId: Int) {
-                if (sessionId <= 0) return
-                releaseAudioEffects()
-
-                if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    try {
-                        viz = Visualizer(sessionId).apply {
-                            captureSize = Visualizer.getCaptureSizeRange()[1]
-                            setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                                override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, rate: Int) {
-                                    waveform?.let { bytes ->
-                                        if (bytes.isEmpty()) return
-                                        var sumL = 0.0
-                                        var sumR = 0.0
-                                        val half = bytes.size / 2
-                                        for (i in 0 until half) {
-                                            val s = (bytes[i].toInt() and 0xFF) - 128
-                                            sumL += s * s
-                                        }
-                                        for (i in half until bytes.size) {
-                                            val s = (bytes[i].toInt() and 0xFF) - 128
-                                            sumR += s * s
-                                        }
-                                        val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat()
-                                        val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat()
-                                        
-                                        // Amortecimento do VU
-                                        vuLeft = vuLeft + 0.08f * (rmsL - vuLeft)
-                                        vuRight = vuRight + 0.08f * (rmsR - vuRight)
-                                    }
-                                }
-
-                                override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, rate: Int) {
-                                    fft?.let { bytes ->
-                                        if (bytes.size < 64) return
-                                        val bands15 = FloatArray(15)
-                                        for (i in 0 until 15) {
-                                            val r = bytes[2 * i].toInt()
-                                            val im = bytes[2 * i + 1].toInt()
-                                            val mag = hypot(r.toDouble(), im.toDouble()).toFloat()
-                                            
-                                            val multiplier = if (i < 3) 0.6f else if (i < 8) 0.8f else 1.0f
-                                            val rawTarget = ((mag * multiplier) / 60f).coerceIn(0.01f, 1.0f)
-                                            
-                                            val currentVal = fftValues.getOrElse(i) { 0.01f }
-                                            bands15[i] = if (rawTarget > currentVal) {
-                                                currentVal + 0.25f * (rawTarget - currentVal)
-                                            } else {
-                                                currentVal - 0.08f * (currentVal - rawTarget)
-                                            }.coerceIn(0.01f, 1.0f)
-                                        }
-                                        fftValues = bands15
-                                    }
-                                }
-                            }, Visualizer.getMaxCaptureRate(), true, true)
-                            enabled = true
-                        }
-                    } catch (_: Exception) {}
-                }
-
-                try {
-                    eq = Equalizer(0, sessionId).apply { enabled = true }
-                    loud = LoudnessEnhancer(sessionId).apply { enabled = highGain }
-                    val bands = eq?.numberOfBands ?: 0
-                    for (i in eqLevels.indices) {
-                        if (i < bands) eq?.setBandLevel(i.toShort(), eqLevels[i].toShort())
+            LaunchedEffect(player) {
+                while (true) {
+                    if (player.isPlaying) {
+                        pos = player.currentPosition
+                        dur = player.duration.coerceAtLeast(0L)
                     }
-                } catch (_: Exception) {}
-            }
-
-            val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-                if (perms[Manifest.permission.RECORD_AUDIO] == true && player.audioSessionId != 0) {
-                    setupAudioEffects(player.audioSessionId)
+                    delay(500)
                 }
             }
-
-            LaunchedEffect(Unit) {
-                val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    perms.add(Manifest.permission.READ_MEDIA_AUDIO)
-                } else {
-                    perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-                }
-                permissionLauncher.launch(perms.toTypedArray())
-
-                if (currentDir.exists() && currentDir.isDirectory) {
-                    dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                }
-
-                val savedPath = prefs.getString("LAST_SONG_PATH", null)
-                val savedPos = prefs.getLong("LAST_SONG_POS", 0L)
-                if (savedPath != null) {
-                    val file = File(savedPath)
-                    if (file.exists()) {
-                        songs = listOf(file)
-                        idx = 0
-                        currentTags = getTags(file)
-                        player.setMediaItem(MediaItem.fromUri(file.toURI().toString()), savedPos)
-                        player.prepare()
-                    }
-                }
-            }
-
-            fun buildShuffleQueue(startIdx: Int = idx) {
-                if (songs.isEmpty()) return
-                val list = songs.indices.toMutableList()
-                list.remove(startIdx)
-                list.shuffle()
-                shuffleQueue = listOf(startIdx) + list
-                shufflePos = 0
-            }
-
-            fun playAt(i: Int, startPosition: Long = 0L) {
-                if (i in songs.indices) {
-                    idx = i
-                    val targetFile = songs[i]
-                    prefs.edit().putString("LAST_SONG_PATH", targetFile.absolutePath).apply()
-                    scope.launch { currentTags = getTags(targetFile) }
-                    
-                    if (shuffleMode && shuffleQueue.isEmpty()) buildShuffleQueue(i)
-                    
-                    player.clearMediaItems()
-                    player.setMediaItem(MediaItem.fromUri(targetFile.toURI().toString()), startPosition)
-                    player.prepare()
-                    player.play()
-                }
-            }
-
-            fun playNext() {
-                if (songs.isEmpty()) return
-                when {
-                    repeatMode == RepeatMode.ONE -> { 
-                        player.seekTo(0)
-                        player.play() 
-                    }
-                    shuffleMode -> {
-                        if (shufflePos + 1 < shuffleQueue.size) {
-                            shufflePos++
-                            playAt(shuffleQueue[shufflePos])
-                        } else if (repeatMode == RepeatMode.ALL) {
-                            buildShuffleQueue()
-                            playAt(shuffleQueue[0])
-                        } else {
-                            player.pause()
-                        }
-                    }
-                    else -> {
-                        val next = idx + 1
-                        if (next < songs.size) playAt(next) else if (repeatMode == RepeatMode.ALL) playAt(0)
-                    }
-                }
-            }
-
-            fun playPrevious() {
-                if (songs.isEmpty()) return
-                if (player.currentPosition > 3000L) {
-                    player.seekTo(0)
-                    return
-                }
-                when {
-                    shuffleMode -> {
-                        if (shufflePos - 1 >= 0) {
-                            shufflePos--
-                            playAt(shuffleQueue[shufflePos])
-                        } else {
-                            playAt(shuffleQueue.last())
-                        }
-                    }
-                    else -> {
-                        val prev = if (idx - 1 >= 0) idx - 1 else songs.size - 1
-                        playAt(prev)
-                    }
-                }
-            }
-
-            LaunchedEffect(volume) { player.volume = volume }
 
             DisposableEffect(player) {
                 val listener = object : Player.Listener {
-                    override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                        if (audioSessionId != 0) {
-                            setupAudioEffects(audioSessionId)
-                        }
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        isPlay = isPlaying
                     }
-
-                    override fun onIsPlayingChanged(p: Boolean) {
-                        isPlay = p
-                    }
-
-                    override fun onPlaybackStateChanged(s: Int) {
-                        dur = player.duration.coerceAtLeast(0L)
-                        if (s == Player.STATE_ENDED) {
-                            playNext()
+                    override fun onPlaybackStateChanged(state: Int) {
+                        if (state == Player.STATE_ENDED) {
+                            if (idx < currentPlaylistView.lastIndex && idx >= 0) {
+                                idx++
+                            }
                         }
                     }
                 }
                 player.addListener(listener)
-                onDispose {
-                    player.removeListener(listener)
-                    releaseAudioEffects()
+                onDispose { player.removeListener(listener) }
+            }
+
+            LaunchedEffect(idx) {
+                if (idx in currentPlaylistView.indices) {
+                    val targetFile = currentPlaylistView[idx]
+                    currentTags = getTags(targetFile)
+                    
+                    val mediaItem = MediaItem.fromUri(targetFile.absolutePath)
+                    player.setMediaItem(mediaItem)
+                    player.prepare()
+                    player.play()
+                    
+                    try {
+                        val audioSessionId = player.audioSessionId
+                        if (audioSessionId != 0) {
+                            eq = Equalizer(0, audioSessionId).apply { enabled = true }
+                            loud = LoudnessEnhancer(audioSessionId).apply { enabled = true }
+                            
+                            viz = Visualizer(audioSessionId).apply {
+                                captureSize = Visualizer.getCaptureSizeRange()[1]
+                                enabled = true
+                            }
+                        }
+                    } catch (_: Exception) {}
                 }
             }
 
-            LaunchedEffect(isPlay) {
-                while (isPlay) {
-                    pos = player.currentPosition
-                    dur = player.duration.coerceAtLeast(0L)
-                    prefs.edit().putLong("LAST_SONG_POS", pos).apply()
-                    delay(200)
+            val permissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestMultiplePermissions()
+            ) { permissions ->
+                if (permissions.values.all { it }) {
+                    scope.launch(Dispatchers.IO) {
+                        currentPlaylistView = criarFilaDeReproducao(currentDir)
+                    }
                 }
             }
 
-            val bgDark = Color(0xFF06070A)
-            val cardBg = Color(0xFF10131A)
-            val cyanNeon = Color(0xFF00E5FF)
-            val goldDial = Color(0xFFC9A84C)
-            val borderNeon = Color(0xFF1E2A3A)
+            fun verificarEBuscarMusicas() {
+                val permissoes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
+                } else {
+                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                }
 
-            MaterialTheme {
-                Box(Modifier.fillMaxSize().background(bgDark)) {
-                    Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // Header Bar
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(Color(0xFF0F1219))
-                                .border(1.dp, borderNeon, RoundedCornerShape(14.dp))
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
+                val todasConcedidas = permissoes.all {
+                    ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
+                }
+
+                if (todasConcedidas) {
+                    scope.launch(Dispatchers.IO) {
+                        currentPlaylistView = criarFilaDeReproducao(currentDir)
+                        if (currentPlaylistView.isNotEmpty() && idx == -1) {
+                            idx = 0
+                        }
+                    }
+                } else {
+                    permissionLauncher.launch(permissoes)
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                verificarEBuscarMusicas()
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color(0xFF121212)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Diretório: ${currentDir.name}",
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = currentTags.title,
+                            color = Color.White,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "${currentTags.artist}  •  ${currentTags.format}  •  ${currentTags.bitrate}",
+                            color = Color.Cyan,
+                            fontSize = 14.sp,
+                            maxLines = 1
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp)
+                            .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val barWidth = size.width / (fftValues.size * 2f)
+                            val space = barWidth
+                            for (i in fftValues.indices) {
+                                val x = i * (barWidth + space) + space
+                                val barHeight = size.height * 0.7f
+                                drawRoundRect(
+                                    brush = Brush.verticalGradient(listOf(Color.Cyan, Color.Blue)),
+                                    topLeft = Offset(x, size.height - barHeight),
+                                    size = Size(barWidth, barHeight),
+                                    cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                )
+                            }
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(vertical = 12.dp)
+                    ) {
+                        itemsIndexed(currentPlaylistView) { index, file ->
+                            val isSelected = index == idx
                             Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF252525) else Color.Transparent)
+                                    .clickable { idx = index }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
+                                Text(
+                                    text = String.format("%02d.", index + 1),
+                                    color = if (isSelected) Color.Cyan else Color.Gray,
+                                    modifier = Modifier.width(32.dp)
+                                )
+                                Column {
                                     Text(
-                                        "☰",
-                                        color = cyanNeon,
-                                        fontSize = 22.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.clickable { showMenu = true }
-                                    )
-                                    Text("JS HIFI PLAYER", color = cyanNeon, fontSize = 18.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("⚙", color = cyanNeon, fontSize = 18.sp, modifier = Modifier.clickable { showEq = !showEq })
-                                    Text(
-                                        "✕",
-                                        color = Color(0xFFFF5252),
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.clickable { finishAffinity() }
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Banner Metadata
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF0D1118))
-                                .border(1.dp, cyanNeon.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                .padding(10.dp)
-                        ) {
-                            Column {
-                                MarqueeRender(currentTags.title.ifEmpty { songs.getOrNull(idx)?.name ?: "JS HIFI - Selecione uma faixa" })
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "${currentTags.artist} • ${currentTags.album} • ${currentTags.format} • ${currentTags.sampleRate}",
-                                    color = cyanNeon,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Painel VU Meters (-20dB a +3dB)
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(cardBg)
-                                .border(1.dp, borderNeon, RoundedCornerShape(12.dp))
-                                .padding(8.dp)
-                                .clickable { vuModeAnalog = !vuModeAnalog }
-                        ) {
-                            Column {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(if (vuModeAnalog) "ANALOG STEREO VU (-20dB a +3dB)" else "BARGRAPH VU MODE (-20dB a +3dB)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                                }
-                                Spacer(Modifier.height(10.dp))
-                                if (vuModeAnalog) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                        VUMeterRender(vuLeft, "LEFT")
-                                        VUMeterRender(vuRight, "RIGHT")
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        BargraphSegmented(vuLeft, "L")
-                                        BargraphSegmented(vuRight, "R")
-                                    }
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        BargraphSegmented(vuLeft, "L")
-                                        BargraphSegmented(vuRight, "R")
-                                        BargraphSegmented((vuLeft + vuRight) / 2, "MASTER")
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Espectro MicroLED Matrix
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(cardBg)
-                                .border(1.dp, borderNeon, RoundedCornerShape(12.dp))
-                                .padding(8.dp)
-                        ) {
-                            Column {
-                                Text("MICROLED SPECTRUM ANALYZER", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                                Spacer(Modifier.height(6.dp))
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .height(100.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color(0xFF05070B))
-                                ) {
-                                    Canvas(Modifier.fillMaxSize()) {
-                                        val bands = fftValues.size
-                                        val totalLedsHeight = 20
-                                        val colWidth = size.width / bands
-                                        val ledSpacingY = 2f
-                                        val ledSpacingX = 3f
-                                        val ledHeight = (size.height - (totalLedsHeight * ledSpacingY)) / totalLedsHeight
-
-                                        fftValues.forEachIndexed { bandIdx, amp ->
-                                            val x = bandIdx * colWidth
-                                            val activeLeds = (amp.coerceIn(0.01f, 1.0f) * totalLedsHeight).toInt()
-
-                                            for (ledIdx in 0 until totalLedsHeight) {
-                                                val y = size.height - ((ledIdx + 1) * (ledHeight + ledSpacingY))
-                                                val ledPercent = (ledIdx + 1).toFloat() / totalLedsHeight.toFloat()
-                                                val isActive = ledIdx < activeLeds
-
-                                                val ledColor = when {
-                                                    !isActive -> Color(0xFF101620)
-                                                    ledPercent <= 0.40f -> Color(0xFF00E676)
-                                                    ledPercent <= 0.709f -> Color(0xFFFF9100)
-                                                    else -> Color(0xFFFF1744)
-                                                }
-
-                                                drawRoundRect(
-                                                    color = ledColor,
-                                                    topLeft = Offset(x + ledSpacingX, y),
-                                                    size = Size(colWidth - (ledSpacingX * 2), ledHeight),
-                                                    cornerRadius = CornerRadius(2f, 2f)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(6.dp))
-
-                        // Controles
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = if (shuffleMode) "🔀 ON" else "🔀 OFF",
-                                    color = if (shuffleMode) cyanNeon else Color.Gray,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        shuffleMode = !shuffleMode
-                                        if (shuffleMode) buildShuffleQueue()
-                                    }
-                                )
-                                Text(
-                                    text = when (repeatMode) {
-                                        RepeatMode.OFF -> "🔁 OFF"
-                                        RepeatMode.ALL -> "🔁 ALL"
-                                        RepeatMode.ONE -> "🔂 1"
-                                    },
-                                    color = if (repeatMode != RepeatMode.OFF) cyanNeon else Color.Gray,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        repeatMode = when (repeatMode) {
-                                            RepeatMode.OFF -> RepeatMode.ALL
-                                            RepeatMode.ALL -> RepeatMode.ONE
-                                            RepeatMode.ONE -> RepeatMode.OFF
-                                        }
-                                    }
-                                )
-                            }
-
-                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "⏮",
-                                    color = cyanNeon,
-                                    fontSize = 22.sp,
-                                    modifier = Modifier.clickable { playPrevious() }
-                                )
-                                Box(
-                                    Modifier
-                                        .size(42.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF0B1724))
-                                        .border(1.5.dp, cyanNeon, CircleShape)
-                                        .clickable {
-                                            if (player.isPlaying) {
-                                                player.pause()
-                                            } else {
-                                                if (idx == -1 && songs.isNotEmpty()) playAt(0) else player.play()
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(if (isPlay) "⏸" else "▶", color = cyanNeon, fontSize = 18.sp)
-                                }
-                                Text(
-                                    text = "⏭",
-                                    color = cyanNeon,
-                                    fontSize = 22.sp,
-                                    modifier = Modifier.clickable { playNext() }
-                                )
-                            }
-
-                            Slider(
-                                value = volume,
-                                onValueChange = { volume = it },
-                                modifier = Modifier.width(85.dp),
-                                colors = SliderDefaults.colors(activeTrackColor = cyanNeon, thumbColor = cyanNeon)
-                            )
-                        }
-
-                        fun formatTime(ms: Long) = "%02d:%02d".format((ms / 1000 / 60).toInt(), (ms / 1000 % 60).toInt())
-                        Text(
-                            text = "${formatTime(pos)} / ${formatTime(dur)}",
-                            color = cyanNeon.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp)
-                        )
-
-                        // Lista
-                        LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
-                            itemsIndexed(songs) { i, f ->
-                                val sel = i == idx
-                                TextButton(
-                                    onClick = { playAt(i) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(if (sel) Color(0xFF102030) else Color.Transparent)
-                                        .padding(vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        f.name,
-                                        color = if (sel) cyanNeon else Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                                        text = file.nameWithoutExtension,
+                                        color = if (isSelected) Color.Cyan else Color.White,
+                                        fontSize = 16.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
+                                    Text(
+                                        text = file.parentFile?.name ?: "Raiz",
+                                        color = Color.Gray,
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
                         }
                     }
 
-                    // Popup Equalizador
-                    if (showEq) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.7f))
-                                .clickable { showEq = false },
-                            contentAlignment = Alignment.Center
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Slider(
+                            value = if (dur > 0) pos.toFloat() / dur else 0f,
+                            onValueChange = {
+                                if (dur > 0) player.seekTo((it * dur).toLong())
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.Cyan,
+                                activeTrackColor = Color.Cyan
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Card(
-                                Modifier
-                                    .fillMaxWidth(0.9f)
-                                    .padding(16.dp)
-                                    .clickable(enabled = false) {},
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF121620))
-                            ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text("EQUALIZADOR HIFI", color = cyanNeon, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                    Spacer(Modifier.height(12.dp))
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text("High Gain / Loudness", color = Color.White, fontSize = 14.sp)
-                                        Switch(
-                                            checked = highGain,
-                                            onCheckedChange = {
-                                                highGain = it
-                                                try { loud?.enabled = highGain } catch (_: Exception) {}
-                                            }
-                                        )
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    val freqLabels = listOf("60Hz", "230Hz", "910Hz", "4kHz", "14kHz")
-                                    eqLevels.forEachIndexed { i, level ->
-                                        Column {
-                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                                Text(freqLabels.getOrElse(i) { "Band $i" }, color = Color.Gray, fontSize = 12.sp)
-                                                Text("${level / 100} dB", color = cyanNeon, fontSize = 12.sp)
-                                            }
-                                            Slider(
-                                                value = level.toFloat(),
-                                                onValueChange = { v ->
-                                                    eqLevels[i] = v.toInt()
-                                                    try {
-                                                        eq?.setBandLevel(i.toShort(), v.toInt().toShort())
-                                                    } catch (_: Exception) {}
-                                                },
-                                                valueRange = -1500f..1500f,
-                                                colors = SliderDefaults.colors(activeTrackColor = cyanNeon, thumbColor = cyanNeon)
-                                            )
-                                        }
-                                    }
-                                    Button(onClick = { showEq = false }, modifier = Modifier.align(Alignment.End)) {
-                                        Text("Concluído")
-                                    }
-                                }
-                            }
+                            Text(text = formatarTempo(pos), color = Color.Gray, fontSize = 12.sp)
+                            Text(text = formatarTempo(dur), color = Color.Gray, fontSize = 12.sp)
                         }
                     }
 
-                    // Menu Lateral
-                    if (showMenu) {
-                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f))) {
-                            Card(
-                                Modifier
-                                    .fillMaxWidth(0.85f)
-                                    .fillMaxHeight()
-                                    .align(Alignment.CenterStart),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF10131A))
-                            ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text("MENU JS HIFI V10", color = goldDial, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(16.dp))
-                                    Button(
-                                        onClick = {
-                                            val list = mutableListOf<File>()
-                                            ctx.contentResolver.query(
-                                                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                                                arrayOf(MediaStore.Audio.Media.DATA),
-                                                null,
-                                                null,
-                                                null
-                                            )?.use { c ->
-                                                val id = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
-                                                while (c.moveToNext()) {
-                                                    val path = c.getString(id) ?: continue
-                                                    val f = File(path)
-                                                    if (f.exists()) list.add(f)
-                                                }
-                                            }
-                                            songs = list
-                                            if (shuffleMode) buildShuffleQueue()
-                                            showMenu = false
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("📂 Todas as músicas", fontSize = 14.sp)
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    Button(
-                                        onClick = {
-                                            showDirBrowser = true
-                                            showMenu = false
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("📁 Abrir Diretório", fontSize = 14.sp)
-                                    }
-                                    
-                                    Spacer(Modifier.weight(1f))
-                                    
-                                    Button(
-                                        onClick = { finishAffinity() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("🚪 Sair do Aplicativo", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                    
-                                    Spacer(Modifier.height(8.dp))
-                                    TextButton(onClick = { showMenu = false }, modifier = Modifier.fillMaxWidth()) {
-                                        Text("FECHAR MENU", color = Color.Gray, fontSize = 12.sp)
-                                    }
-                                }
-                            }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = { if (idx > 0) idx-- },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF222222))
+                        ) {
+                            Text("Anterior", color = Color.White)
                         }
-                    }
-
-                    // Navegador de Pastas
-                    if (showDirBrowser) {
-                        Box(Modifier.fillMaxSize().background(Color(0xFF06070A))) {
-                            Column(Modifier.fillMaxSize().padding(12.dp)) {
-                                Text("📁 ${currentDir.absolutePath.takeLast(35)}", color = Color.White, fontSize = 12.sp)
-                                Spacer(Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick = { 
-                                        currentDir.parentFile?.let { 
-                                            currentDir = it 
-                                            dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                                        } 
-                                    }) {
-                                        Text("⬆ Voltar", fontSize = 14.sp)
-                                    }
-                                    Button(
-                                        onClick = {
-                                            songs = dirFiles.filter { !it.isDirectory && it.extension.lowercase() in listOf("mp3", "flac", "wav", "m4a") }
-                                            if (shuffleMode) buildShuffleQueue()
-                                            showDirBrowser = false
-                                        }
-                                    ) {
-                                        Text("▶ Tocar pasta", fontSize = 14.sp)
-                                    }
-                                }
-                                LazyColumn(Modifier.weight(1f)) {
-                                    items(dirFiles) { f ->
-                                        TextButton(
-                                            onClick = {
-                                                if (f.isDirectory) {
-                                                    currentDir = f
-                                                    dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                                                } else {
-                                                    songs = listOf(f)
-                                                    playAt(0)
-                                                    showDirBrowser = false
-                                                }
-                                            },
-                                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                (if (f.isDirectory) "📁 " else "🎵 ") + f.name,
-                                                color = Color.White,
-                                                fontSize = 14.sp,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-                                }
-                                Button(onClick = { showDirBrowser = false }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Fechar", fontSize = 14.sp)
-                                }
-                            }
+                        Button(
+                            onClick = { if (player.isPlaying) player.pause() else player.play() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan)
+                        ) {
+                            Text(if (isPlay) "Pausar" else "Tocar", color = Color.Black)
+                        }
+                        Button(
+                            onClick = { if (idx < currentPlaylistView.lastIndex) idx++ },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF222222))
+                        ) {
+                            Text("Próxima", color = Color.White)
                         }
                     }
                 }
             }
         }
+    }
+
+    private fun formatarTempo(ms: Long): String {
+        val totalSegundos = ms / 1000
+        val minutos = totalSegundos / 60
+        val segundos = totalSegundos % 60
+        return String.format("%02d:%02d", minutos, segundos)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         try {
-            viz?.enabled = false
-            viz?.release()
             eq?.release()
             loud?.release()
+            viz?.release()
             player.release()
         } catch (_: Exception) {}
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun MarqueeRender(text: String) {
-    Text(
-        text = text,
-        color = Color.White,
-        fontSize = 16.sp,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
-        modifier = Modifier
-            .fillMaxWidth()
-            .basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp)
-    )
-}
-
-@Composable
-fun VUMeterRender(level: Float, label: String) {
-    val animLevel by animateFloatAsState(targetValue = level, animationSpec = tween(60), label = "vu")
-    Box(
-        Modifier
-            .size(132.dp)
-            .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(Color(0xFF2A2D36), Color(0xFF0F1117)), radius = 200f))
-            .border(3.dp, Color(0xFFC9A84C), CircleShape)
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val centerOffset = Offset(size.width / 2, size.height / 2 + 10)
-            val radius = size.minDimension / 2 - 14
-            drawCircle(
-                Brush.radialGradient(
-                    listOf(Color(0xFFFFF8E1), Color(0xFFFFE082).copy(alpha = 0.8f), Color(0xFF8D6E63)),
-                    center = centerOffset,
-                    radius = radius
-                ),
-                radius = radius - 2,
-                center = centerOffset
-            )
-            
-            // Desenha as marcas da escala analógica de -20 dB a +3 dB
-            val dbTicks = listOf(-20, -15, -10, -7, -5, -3, 0, +1, +2, +3)
-            dbTicks.forEach { db ->
-                // Mapeia -20..+3 em um arco rotacional
-                val norm = ((db + 20f) / 23f).coerceIn(0f, 1f)
-                val ang = -115 + norm * 230f
-                val rad = Math.toRadians(ang.toDouble() - 90)
-                val r1 = radius - 4
-                val r2 = if (db == 0 || db == -20 || db == 3) radius - 16 else radius - 10
-                val col = if (db >= 0) Color.Red else Color.Black
-                
-                drawLine(
-                    col,
-                    centerOffset + Offset(cos(rad).toFloat() * r2, sin(rad).toFloat() * r2),
-                    centerOffset + Offset(cos(rad).toFloat() * r1, sin(rad).toFloat() * r1),
-                    if (db == 0 || db == -20 || db == 3) 1.8.dp.toPx() else 1.dp.toPx()
-                )
-            }
-            
-            // Posição da agulha para a faixa -20dB até +3dB
-            val dbVal = (20 * log10(animLevel.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-20f, 3f)
-            val needlePercent = ((dbVal + 20f) / 23f).coerceIn(0f, 1f)
-            
-            val ang = -115 + needlePercent * 230f
-            val rad = Math.toRadians(ang.toDouble() - 90)
-            val x = centerOffset.x + cos(rad).toFloat() * (radius - 12)
-            val y = centerOffset.y + sin(rad).toFloat() * (radius - 12)
-            
-            drawLine(Color.Black, centerOffset, Offset(x, y), strokeWidth = 2.8.dp.toPx(), cap = StrokeCap.Round)
-            drawCircle(Color(0xFF101010), 10.dp.toPx(), centerOffset)
-        }
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("VU", color = Color.Black.copy(alpha = 0.6f), fontSize = 8.sp, fontWeight = FontWeight.Bold)
-            Text(label, color = Color(0xFF8D6E63), fontSize = 10.sp, fontWeight = FontWeight.Black)
-        }
-    }
-}
-
-@Composable
-fun BargraphSegmented(level: Float, label: String) {
-    // Cálculo em dB de -20dB a +3dB
-    val db = (20 * log10(level.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-20f, 3f)
-    val percent = ((db + 20f) / 23f).coerceIn(0f, 1f)
-    
-    Column {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(label, color = Color(0xFF00E5FF), fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(52.dp))
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(18.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color(0xFF0A0E15))
-            ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val segments = 26
-                    val segW = size.width / segments
-                    val activeSegs = (segments * percent).toInt()
-                    for (i in 0 until segments) {
-                        val x = i * segW
-                        val isActive = i < activeSegs
-                        val segPercent = (i + 1).toFloat() / segments.toFloat()
-                        
-                        val col = when {
-                            !isActive -> Color(0xFF141A24)
-                            segPercent <= 0.40f -> Color(0xFF00E676)
-                            segPercent <= 0.709f -> Color(0xFFFF9100)
-                            else -> Color(0xFFFF1744)
-                        }
-                        drawRect(col, topLeft = Offset(x + 1, 2f), size = Size(segW - 2, size.height - 4f))
-                    }
-                }
-            }
-        }
     }
 }
