@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
                                         val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat()
                                         val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat()
                                         
-                                        // Filtro de amortecimento do VU (reduz resposta brusca)
+                                        // Amortecimento do VU
                                         vuLeft = vuLeft + 0.08f * (rmsL - vuLeft)
                                         vuRight = vuRight + 0.08f * (rmsR - vuRight)
                                     }
@@ -183,11 +183,9 @@ class MainActivity : ComponentActivity() {
                                             val im = bytes[2 * i + 1].toInt()
                                             val mag = hypot(r.toDouble(), im.toDouble()).toFloat()
                                             
-                                            // Reduzido o ganho e atenuação para evitar saturação do espectro
                                             val multiplier = if (i < 3) 0.6f else if (i < 8) 0.8f else 1.0f
                                             val rawTarget = ((mag * multiplier) / 60f).coerceIn(0.01f, 1.0f)
                                             
-                                            // Suavização da queda (decay) para efeito suave estilo LED
                                             val currentVal = fftValues.getOrElse(i) { 0.01f }
                                             bands15[i] = if (rawTarget > currentVal) {
                                                 currentVal + 0.25f * (rawTarget - currentVal)
@@ -365,7 +363,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Box(Modifier.fillMaxSize().background(bgDark)) {
                     Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // Header Bar com botão de Fechar App
+                        // Header Bar
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -394,7 +392,6 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text("⚙", color = cyanNeon, fontSize = 18.sp, modifier = Modifier.clickable { showEq = !showEq })
-                                    // Botão Fechar App no cabeçalho
                                     Text(
                                         "✕",
                                         color = Color(0xFFFF5252),
@@ -432,7 +429,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Painel VU Meters
+                        // Painel VU Meters (-20dB a +3dB)
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -444,7 +441,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Column {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(if (vuModeAnalog) "ANALOG STEREO VU" else "BARGRAPH VU MODE (-10dB a +3dB)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                    Text(if (vuModeAnalog) "ANALOG STEREO VU (-20dB a +3dB)" else "BARGRAPH VU MODE (-20dB a +3dB)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
                                 }
                                 Spacer(Modifier.height(10.dp))
                                 if (vuModeAnalog) {
@@ -469,7 +466,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Espectro estilo MicroLED Matrix com cores parametrizadas
+                        // Espectro MicroLED Matrix
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -490,7 +487,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Canvas(Modifier.fillMaxSize()) {
                                         val bands = fftValues.size
-                                        val totalLedsHeight = 20 // 20 segmentos de MicroLED por coluna
+                                        val totalLedsHeight = 20
                                         val colWidth = size.width / bands
                                         val ledSpacingY = 2f
                                         val ledSpacingX = 3f
@@ -505,12 +502,11 @@ class MainActivity : ComponentActivity() {
                                                 val ledPercent = (ledIdx + 1).toFloat() / totalLedsHeight.toFloat()
                                                 val isActive = ledIdx < activeLeds
 
-                                                // Definindo as cores com base na porcentagem de altura pedida
                                                 val ledColor = when {
-                                                    !isActive -> Color(0xFF101620) // LED desligado
-                                                    ledPercent <= 0.40f -> Color(0xFF00E676) // Verde (0 - 40%)
-                                                    ledPercent <= 0.709f -> Color(0xFFFF9100) // Laranja (40.1% - 70.9%)
-                                                    else -> Color(0xFFFF1744) // Vermelho (71% - 100%)
+                                                    !isActive -> Color(0xFF101620)
+                                                    ledPercent <= 0.40f -> Color(0xFF00E676)
+                                                    ledPercent <= 0.709f -> Color(0xFFFF9100)
+                                                    else -> Color(0xFFFF1744)
                                                 }
 
                                                 drawRoundRect(
@@ -528,7 +524,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Modos de Reprodução & Botões de Controle
+                        // Controles
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -612,7 +608,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp)
                         )
 
-                        // Lista de reprodução
+                        // Lista
                         LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
                             itemsIndexed(songs) { i, f ->
                                 val sel = i == idx
@@ -750,7 +746,6 @@ class MainActivity : ComponentActivity() {
                                     
                                     Spacer(Modifier.weight(1f))
                                     
-                                    // Botão de Fechar Aplicativo no Menu
                                     Button(
                                         onClick = { finishAffinity() },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
@@ -877,23 +872,35 @@ fun VUMeterRender(level: Float, label: String) {
                 radius = radius - 2,
                 center = centerOffset
             )
-            for (db in -20..3 step 2) {
-                val ang = -115 + ((db + 20) / 23f) * 230f
+            
+            // Desenha as marcas da escala analógica de -20 dB a +3 dB
+            val dbTicks = listOf(-20, -15, -10, -7, -5, -3, 0, +1, +2, +3)
+            dbTicks.forEach { db ->
+                // Mapeia -20..+3 em um arco rotacional
+                val norm = ((db + 20f) / 23f).coerceIn(0f, 1f)
+                val ang = -115 + norm * 230f
                 val rad = Math.toRadians(ang.toDouble() - 90)
                 val r1 = radius - 4
-                val r2 = if (db % 10 == 0) radius - 16 else radius - 10
+                val r2 = if (db == 0 || db == -20 || db == 3) radius - 16 else radius - 10
                 val col = if (db >= 0) Color.Red else Color.Black
+                
                 drawLine(
                     col,
                     centerOffset + Offset(cos(rad).toFloat() * r2, sin(rad).toFloat() * r2),
                     centerOffset + Offset(cos(rad).toFloat() * r1, sin(rad).toFloat() * r1),
-                    if (db % 10 == 0) 1.6.dp.toPx() else 1.dp.toPx()
+                    if (db == 0 || db == -20 || db == 3) 1.8.dp.toPx() else 1.dp.toPx()
                 )
             }
-            val ang = -115 + animLevel.coerceIn(0f, 1f) * 230f
+            
+            // Posição da agulha para a faixa -20dB até +3dB
+            val dbVal = (20 * log10(animLevel.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-20f, 3f)
+            val needlePercent = ((dbVal + 20f) / 23f).coerceIn(0f, 1f)
+            
+            val ang = -115 + needlePercent * 230f
             val rad = Math.toRadians(ang.toDouble() - 90)
             val x = centerOffset.x + cos(rad).toFloat() * (radius - 12)
             val y = centerOffset.y + sin(rad).toFloat() * (radius - 12)
+            
             drawLine(Color.Black, centerOffset, Offset(x, y), strokeWidth = 2.8.dp.toPx(), cap = StrokeCap.Round)
             drawCircle(Color(0xFF101010), 10.dp.toPx(), centerOffset)
         }
@@ -911,8 +918,9 @@ fun VUMeterRender(level: Float, label: String) {
 
 @Composable
 fun BargraphSegmented(level: Float, label: String) {
-    val db = (20 * log10(level.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-10f, 3f)
-    val percent = ((db + 10f) / 13f).coerceIn(0f, 1f)
+    // Cálculo em dB de -20dB a +3dB
+    val db = (20 * log10(level.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-20f, 3f)
+    val percent = ((db + 20f) / 23f).coerceIn(0f, 1f)
     
     Column {
         Row(
