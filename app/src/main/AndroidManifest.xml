@@ -2,18 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://tools.android.com/tools">
 
-    <!-- Permissão para Android 13+ (API 33+) para ler arquivos de áudio -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-
-    <!-- Permissão de leitura para Android 12L ou inferior (API 32-) -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-
-    <!-- Permissão para a API Visualizer -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- Permissões para execução em segundo plano -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
@@ -32,7 +25,6 @@
             android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
