@@ -9,7 +9,6 @@ import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.Visualizer
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -36,7 +35,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
@@ -55,7 +53,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.log10
 import kotlin.math.sin
 
 enum class RepeatMode { OFF, ALL, ONE }
@@ -110,14 +107,15 @@ class MainActivity : ComponentActivity() {
             var pos by remember { mutableStateOf(0L) }
             var dur by remember { mutableStateOf(0L) }
             
-            var fftValues by remember { mutableStateOf(FloatArray(15) { 0.02f }) }
-            var vuLeft by remember { mutableStateOf(0.02f) }
-            var vuRight by remember { mutableStateOf(0.02f) }
+            var fftValues by remember { mutableStateOf(FloatArray(15) { 0.01f }) }
+            var vuLeft by remember { mutableStateOf(0.01f) }
+            var vuRight by remember { mutableStateOf(0.01f) }
             var volume by remember { mutableStateOf(0.8f) }
             var highGain by remember { mutableStateOf(false) }
             var showEq by remember { mutableStateOf(false) }
             var showMenu by remember { mutableStateOf(false) }
             var showDirBrowser by remember { mutableStateOf(false) }
+            var showQueueView by remember { mutableStateOf(true) }
             var vuModeAnalog by remember { mutableStateOf(true) }
             
             var currentDir by remember { mutableStateOf(File("/storage/emulated/0/Music")) }
@@ -165,11 +163,11 @@ class MainActivity : ComponentActivity() {
                                             val s = (bytes[i].toInt() and 0xFF) - 128
                                             sumR += s * s
                                         }
-                                        val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat()
-                                        val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat()
+                                        val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat().coerceIn(0f, 1f)
+                                        val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat().coerceIn(0f, 1f)
                                         
-                                        vuLeft = vuLeft + 0.08f * (rmsL - vuLeft)
-                                        vuRight = vuRight + 0.08f * (rmsR - vuRight)
+                                        vuLeft = vuLeft + 0.25f * (rmsL - vuLeft)
+                                        vuRight = vuRight + 0.25f * (rmsR - vuRight)
                                     }
                                 }
 
@@ -177,19 +175,29 @@ class MainActivity : ComponentActivity() {
                                     fft?.let { bytes ->
                                         if (bytes.size < 64) return
                                         val bands15 = FloatArray(15)
+                                        
                                         for (i in 0 until 15) {
                                             val r = bytes[2 * i].toInt()
                                             val im = bytes[2 * i + 1].toInt()
-                                            val mag = hypot(r.toDouble(), im.toDouble()).toFloat()
+                                            val magnitude = hypot(r.toDouble(), im.toDouble()).toFloat()
                                             
-                                            val multiplier = if (i < 3) 0.6f else if (i < 8) 0.8f else 1.0f
-                                            val rawTarget = ((mag * multiplier) / 60f).coerceIn(0.01f, 1.0f)
+                                            // Aumento do ganho nos graves (i < 4) para resposta imediata ao bumbo/bass
+                                            val boost = when (i) {
+                                                0 -> 2.8f
+                                                1 -> 2.4f
+                                                2 -> 2.0f
+                                                3 -> 1.6f
+                                                else -> 1.2f
+                                            }
                                             
-                                            val currentVal = fftValues.getOrElse(i) { 0.01f }
-                                            bands15[i] = if (rawTarget > currentVal) {
-                                                currentVal + 0.25f * (rawTarget - currentVal)
+                                            val target = ((magnitude * boost) / 45f).coerceIn(0.01f, 1.0f)
+                                            val current = fftValues.getOrElse(i) { 0.01f }
+                                            
+                                            // Ataque rápido e queda suave dos LEDs
+                                            bands15[i] = if (target > current) {
+                                                current + 0.65f * (target - current)
                                             } else {
-                                                currentVal - 0.08f * (currentVal - rawTarget)
+                                                current - 0.20f * (current - target)
                                             }.coerceIn(0.01f, 1.0f)
                                         }
                                         fftValues = bands15
@@ -361,7 +369,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Box(Modifier.fillMaxSize().background(bgDark)) {
                     Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // Header Bar
+                        // Top Bar
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -403,7 +411,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Banner Metadata
+                        // Faixa Info Banner
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -427,7 +435,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Painel VU Meters
+                        // VU Meters (Alternável entre Analógico e Bargraph LED)
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -439,7 +447,13 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Column {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(if (vuModeAnalog) "ANALOG STEREO VU" else "BARGRAPH VU MODE (-20dB a +3dB)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                    Text(
+                                        if (vuModeAnalog) "ANALOG STEREO VU METER" else "BARGRAPH LED VU MODE",
+                                        color = cyanNeon,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                    Text("Toque p/ alternar", color = Color.Gray, fontSize = 9.sp)
                                 }
                                 Spacer(Modifier.height(10.dp))
                                 if (vuModeAnalog) {
@@ -447,16 +461,10 @@ class MainActivity : ComponentActivity() {
                                         VUMeterRender(vuLeft, "LEFT")
                                         VUMeterRender(vuRight, "RIGHT")
                                     }
-                                    Spacer(Modifier.height(8.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        BargraphSegmented(vuLeft, "L")
-                                        BargraphSegmented(vuRight, "R")
-                                    }
                                 } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         BargraphSegmented(vuLeft, "L")
                                         BargraphSegmented(vuRight, "R")
-                                        BargraphSegmented((vuLeft + vuRight) / 2, "MASTER")
                                     }
                                 }
                             }
@@ -464,7 +472,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Espectro estilo MicroLED Matrix
+                        // Espectro de Frequências Reativo (Bargraph LED rápido)
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -474,26 +482,26 @@ class MainActivity : ComponentActivity() {
                                 .padding(8.dp)
                         ) {
                             Column {
-                                Text("MICROLED SPECTRUM ANALYZER", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Text("MICROLED SPECTRUM ANALYZER (RÁPIDO / GRAVES)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
                                 Spacer(Modifier.height(6.dp))
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
-                                        .height(100.dp)
+                                        .height(95.dp)
                                         .clip(RoundedCornerShape(6.dp))
                                         .background(Color(0xFF05070B))
                                 ) {
                                     Canvas(Modifier.fillMaxSize()) {
                                         val bands = fftValues.size
-                                        val totalLedsHeight = 20
+                                        val totalLedsHeight = 16
                                         val colWidth = size.width / bands
                                         val ledSpacingY = 2f
-                                        val ledSpacingX = 3f
+                                        val ledSpacingX = 2.5f
                                         val ledHeight = (size.height - (totalLedsHeight * ledSpacingY)) / totalLedsHeight
 
                                         fftValues.forEachIndexed { bandIdx, amp ->
                                             val x = bandIdx * colWidth
-                                            val activeLeds = (amp.coerceIn(0.01f, 1.0f) * totalLedsHeight).toInt()
+                                            val activeLeds = (amp * totalLedsHeight).toInt()
 
                                             for (ledIdx in 0 until totalLedsHeight) {
                                                 val y = size.height - ((ledIdx + 1) * (ledHeight + ledSpacingY))
@@ -501,9 +509,9 @@ class MainActivity : ComponentActivity() {
                                                 val isActive = ledIdx < activeLeds
 
                                                 val ledColor = when {
-                                                    !isActive -> Color(0xFF101620)
-                                                    ledPercent <= 0.40f -> Color(0xFF00E676)
-                                                    ledPercent <= 0.709f -> Color(0xFFFF9100)
+                                                    !isActive -> Color(0xFF0F1520)
+                                                    ledPercent <= 0.45f -> Color(0xFF00E676)
+                                                    ledPercent <= 0.75f -> Color(0xFFFF9100)
                                                     else -> Color(0xFFFF1744)
                                                 }
 
@@ -511,7 +519,7 @@ class MainActivity : ComponentActivity() {
                                                     color = ledColor,
                                                     topLeft = Offset(x + ledSpacingX, y),
                                                     size = Size(colWidth - (ledSpacingX * 2), ledHeight),
-                                                    cornerRadius = CornerRadius(2f, 2f)
+                                                    cornerRadius = CornerRadius(1.5f, 1.5f)
                                                 )
                                             }
                                         }
@@ -522,7 +530,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Modos de Reprodução & Botões de Controle
+                        // Modos de Reprodução & Botões
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -616,7 +624,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(4.dp))
 
-                        // Controle de Volume
+                        // Volume
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -638,50 +646,52 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Playlist / Lista de Músicas Tocando
-                        Text("FILA DE REPRODUÇÃO (${songs.size})", color = cyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(4.dp))
-                        
-                        LazyColumn(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(cardBg)
-                                .border(1.dp, borderNeon, RoundedCornerShape(8.dp))
-                        ) {
-                            itemsIndexed(songs) { index, song ->
-                                val isSelected = index == idx
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(if (isSelected) Color(0xFF192535) else Color.Transparent)
-                                        .clickable { playAt(index) }
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            song.nameWithoutExtension,
-                                            color = if (isSelected) cyanNeon else Color.White,
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            song.parentFile?.name ?: "Mídia",
-                                            color = Color.Gray,
-                                            fontSize = 10.sp,
-                                            maxLines = 1
-                                        )
+                        // Fila de Reprodução Integrada
+                        if (showQueueView) {
+                            Text("FILA DE REPRODUÇÃO (${songs.size})", color = cyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            
+                            LazyColumn(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(cardBg)
+                                    .border(1.dp, borderNeon, RoundedCornerShape(8.dp))
+                            ) {
+                                itemsIndexed(songs) { index, song ->
+                                    val isSelected = index == idx
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(if (isSelected) Color(0xFF192535) else Color.Transparent)
+                                            .clickable { playAt(index) }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                song.nameWithoutExtension,
+                                                color = if (isSelected) cyanNeon else Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                song.parentFile?.name ?: "Mídia",
+                                                color = Color.Gray,
+                                                fontSize = 10.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                        if (isSelected && isPlay) {
+                                            Text("♫", color = cyanNeon, fontSize = 14.sp)
+                                        }
                                     }
-                                    if (isSelected && isPlay) {
-                                        Text("♫", color = cyanNeon, fontSize = 14.sp)
-                                    }
+                                    Divider(color = Color(0xFF18202C), thickness = 0.5.dp)
                                 }
-                                Divider(color = Color(0xFF18202C), thickness = 0.5.dp)
                             }
                         }
                     }
@@ -741,7 +751,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // Navegador de Arquivos (Directory Browser Overlay)
+                    // Navegador de Arquivos
                     if (showDirBrowser) {
                         Box(
                             Modifier
@@ -775,7 +785,7 @@ class MainActivity : ComponentActivity() {
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2A3A))
                                         ) {
-                                            Text("⬆ Voltar Folder", fontSize = 11.sp, color = cyanNeon)
+                                            Text("⬆ Voltar Pasta", fontSize = 11.sp, color = cyanNeon)
                                         }
                                     }
                                     Button(
@@ -785,6 +795,7 @@ class MainActivity : ComponentActivity() {
                                                 songs = audioFiles
                                                 playAt(0)
                                                 showDirBrowser = false
+                                                showQueueView = true
                                             }
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
@@ -814,6 +825,7 @@ class MainActivity : ComponentActivity() {
                                                         val selectedIdx = audioFiles.indexOf(file)
                                                         playAt(if (selectedIdx != -1) selectedIdx else 0)
                                                         showDirBrowser = false
+                                                        showQueueView = true
                                                     }
                                                 }
                                                 .padding(vertical = 10.dp, horizontal = 4.dp),
@@ -847,7 +859,7 @@ class MainActivity : ComponentActivity() {
                             Column(
                                 Modifier
                                     .fillMaxHeight()
-                                    .width(240.dp)
+                                    .width(250.dp)
                                     .background(Color(0xFF0C1017))
                                     .padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -855,12 +867,22 @@ class MainActivity : ComponentActivity() {
                                 Text("MENU HIFI", color = cyanNeon, fontSize = 16.sp, fontWeight = FontWeight.Black)
                                 Divider(color = borderNeon)
                                 Text(
-                                    "📁 Abrir Armazenamento",
+                                    "📁 Arquivos & Pastas",
                                     color = Color.White,
                                     fontSize = 13.sp,
                                     modifier = Modifier.clickable {
                                         showMenu = false
                                         showDirBrowser = true
+                                    }
+                                )
+                                Text(
+                                    "📜 Fila de Reprodução (${songs.size})",
+                                    color = cyanNeon,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        showMenu = false
+                                        showQueueView = !showQueueView
                                     }
                                 )
                                 Text(
@@ -873,7 +895,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 )
                                 Text(
-                                    "🔄 Alternar VU Meter",
+                                    "🔄 Alternar Modo VU",
                                     color = Color.White,
                                     fontSize = 13.sp,
                                     modifier = Modifier.clickable {
@@ -917,22 +939,25 @@ fun MarqueeRender(text: String) {
 
 @Composable
 fun VUMeterRender(level: Float, label: String) {
-    val animatedLevel by animateFloatAsState(targetValue = level.coerceIn(0.01f, 1.0f), animationSpec = tween(120))
+    val animatedLevel by animateFloatAsState(
+        targetValue = level.coerceIn(0.01f, 1.0f),
+        animationSpec = tween(durationMillis = 80)
+    )
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(2.dp))
         Box(
             Modifier
-                .size(width = 110.dp, height = 60.dp)
+                .size(width = 110.dp, height = 65.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(0xFF030508))
                 .border(1.dp, Color(0xFF1E2A3A), RoundedCornerShape(6.dp))
         ) {
             Canvas(Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2f, size.height * 1.1f)
+                val center = Offset(size.width / 2f, size.height * 1.15f)
                 val radius = size.height * 0.95f
                 
-                // Arcos de fundo dB
+                // Mostrador do VU
                 drawArc(
                     color = Color(0xFF00E676),
                     startAngle = 210f,
@@ -948,7 +973,7 @@ fun VUMeterRender(level: Float, label: String) {
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
                 )
 
-                // Ponteiro Analógico
+                // Agulha Analógica Reativa
                 val angleDeg = 210f + (animatedLevel * 120f)
                 val angleRad = Math.toRadians(angleDeg.toDouble())
                 val end = Offset(
