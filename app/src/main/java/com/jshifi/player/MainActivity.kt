@@ -168,7 +168,6 @@ class MainActivity : ComponentActivity() {
                                         val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat()
                                         val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat()
                                         
-                                        // Filtro de amortecimento do VU (reduz resposta brusca)
                                         vuLeft = vuLeft + 0.08f * (rmsL - vuLeft)
                                         vuRight = vuRight + 0.08f * (rmsR - vuRight)
                                     }
@@ -183,11 +182,9 @@ class MainActivity : ComponentActivity() {
                                             val im = bytes[2 * i + 1].toInt()
                                             val mag = hypot(r.toDouble(), im.toDouble()).toFloat()
                                             
-                                            // Reduzido o ganho e atenuação para evitar saturação do espectro
                                             val multiplier = if (i < 3) 0.6f else if (i < 8) 0.8f else 1.0f
                                             val rawTarget = ((mag * multiplier) / 60f).coerceIn(0.01f, 1.0f)
                                             
-                                            // Suavização da queda (decay) para efeito suave estilo LED
                                             val currentVal = fftValues.getOrElse(i) { 0.01f }
                                             bands15[i] = if (rawTarget > currentVal) {
                                                 currentVal + 0.25f * (rawTarget - currentVal)
@@ -359,13 +356,12 @@ class MainActivity : ComponentActivity() {
             val bgDark = Color(0xFF06070A)
             val cardBg = Color(0xFF10131A)
             val cyanNeon = Color(0xFF00E5FF)
-            val goldDial = Color(0xFFC9A84C)
             val borderNeon = Color(0xFF1E2A3A)
 
             MaterialTheme {
                 Box(Modifier.fillMaxSize().background(bgDark)) {
                     Column(Modifier.fillMaxSize().padding(8.dp)) {
-                        // Header Bar com botão de Fechar App
+                        // Header Bar
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -394,7 +390,6 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text("⚙", color = cyanNeon, fontSize = 18.sp, modifier = Modifier.clickable { showEq = !showEq })
-                                    // Botão Fechar App no cabeçalho
                                     Text(
                                         "✕",
                                         color = Color(0xFFFF5252),
@@ -469,7 +464,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(8.dp))
 
-                        // Espectro estilo MicroLED Matrix com cores parametrizadas
+                        // Espectro estilo MicroLED Matrix
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -490,7 +485,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Canvas(Modifier.fillMaxSize()) {
                                         val bands = fftValues.size
-                                        val totalLedsHeight = 20 // 20 segmentos de MicroLED por coluna
+                                        val totalLedsHeight = 20
                                         val colWidth = size.width / bands
                                         val ledSpacingY = 2f
                                         val ledSpacingX = 3f
@@ -505,12 +500,11 @@ class MainActivity : ComponentActivity() {
                                                 val ledPercent = (ledIdx + 1).toFloat() / totalLedsHeight.toFloat()
                                                 val isActive = ledIdx < activeLeds
 
-                                                // Definindo as cores com base na porcentagem de altura pedida
                                                 val ledColor = when {
-                                                    !isActive -> Color(0xFF101620) // LED desligado
-                                                    ledPercent <= 0.40f -> Color(0xFF00E676) // Verde (0 - 40%)
-                                                    ledPercent <= 0.709f -> Color(0xFFFF9100) // Laranja (40.1% - 70.9%)
-                                                    else -> Color(0xFFFF1744) // Vermelho (71% - 100%)
+                                                    !isActive -> Color(0xFF101620)
+                                                    ledPercent <= 0.40f -> Color(0xFF00E676)
+                                                    ledPercent <= 0.709f -> Color(0xFFFF9100)
+                                                    else -> Color(0xFFFF1744)
                                                 }
 
                                                 drawRoundRect(
@@ -595,104 +589,247 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.clickable { playNext() }
                                 )
                             }
+                        }
 
+                        Spacer(Modifier.height(6.dp))
+
+                        // Barra de Progresso
+                        Column(Modifier.fillMaxWidth()) {
+                            Slider(
+                                value = if (dur > 0) pos.toFloat() / dur else 0f,
+                                onValueChange = { percent ->
+                                    val target = (percent * dur).toLong()
+                                    player.seekTo(target)
+                                    pos = target
+                                },
+                                colors = SliderDefaults.colors(
+                                    thumbColor = cyanNeon,
+                                    activeTrackColor = cyanNeon,
+                                    inactiveTrackColor = Color(0xFF1E2A3A)
+                                )
+                            )
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(formatMs(pos), color = Color.Gray, fontSize = 10.sp)
+                                Text(formatMs(dur), color = Color.Gray, fontSize = 10.sp)
+                            }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
+                        // Controle de Volume
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("🔊", color = cyanNeon, fontSize = 12.sp)
                             Slider(
                                 value = volume,
                                 onValueChange = { volume = it },
-                                modifier = Modifier.width(85.dp),
-                                colors = SliderDefaults.colors(activeTrackColor = cyanNeon, thumbColor = cyanNeon)
+                                modifier = Modifier.weight(1f),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = cyanNeon,
+                                    activeTrackColor = cyanNeon,
+                                    inactiveTrackColor = Color(0xFF1E2A3A)
+                                )
                             )
+                            Text("${(volume * 100).toInt()}%", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
 
-                        fun formatTime(ms: Long) = "%02d:%02d".format((ms / 1000 / 60).toInt(), (ms / 1000 % 60).toInt())
-                        Text(
-                            text = "${formatTime(pos)} / ${formatTime(dur)}",
-                            color = cyanNeon.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp)
-                        )
+                        Spacer(Modifier.height(6.dp))
 
-                        // Lista de reprodução
-                        LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
-                            itemsIndexed(songs) { i, f ->
-                                val sel = i == idx
-                                TextButton(
-                                    onClick = { playAt(i) },
+                        // Playlist / Lista de Músicas Tocando
+                        Text("FILA DE REPRODUÇÃO (${songs.size})", color = cyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        
+                        LazyColumn(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(cardBg)
+                                .border(1.dp, borderNeon, RoundedCornerShape(8.dp))
+                        ) {
+                            itemsIndexed(songs) { index, song ->
+                                val isSelected = index == idx
+                                Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(if (sel) Color(0xFF102030) else Color.Transparent)
-                                        .padding(vertical = 2.dp)
+                                        .background(if (isSelected) Color(0xFF192535) else Color.Transparent)
+                                        .clickable { playAt(index) }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        f.name,
-                                        color = if (sel) cyanNeon else Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            song.nameWithoutExtension,
+                                            color = if (isSelected) cyanNeon else Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            song.parentFile?.name ?: "Mídia",
+                                            color = Color.Gray,
+                                            fontSize = 10.sp,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    if (isSelected && isPlay) {
+                                        Text("♫", color = cyanNeon, fontSize = 14.sp)
+                                    }
                                 }
+                                Divider(color = Color(0xFF18202C), thickness = 0.5.dp)
                             }
                         }
                     }
 
-                    // Popup Equalizador
+                    // Dialog de Equalizador
                     if (showEq) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.7f))
-                                .clickable { showEq = false },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Card(
-                                Modifier
-                                    .fillMaxWidth(0.9f)
-                                    .padding(16.dp)
-                                    .clickable(enabled = false) {},
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF121620))
-                            ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text("EQUALIZADOR HIFI", color = cyanNeon, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                    Spacer(Modifier.height(12.dp))
+                        AlertDialog(
+                            onDismissRequest = { showEq = false },
+                            containerColor = Color(0xFF0F141C),
+                            title = { Text("EQUALIZADOR HIFI", color = cyanNeon, fontWeight = FontWeight.Black) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Row(
                                         Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("High Gain / Loudness", color = Color.White, fontSize = 14.sp)
+                                        Text("Ganho Alto (Loudness)", color = Color.White, fontSize = 12.sp)
                                         Switch(
                                             checked = highGain,
                                             onCheckedChange = {
                                                 highGain = it
                                                 try { loud?.enabled = highGain } catch (_: Exception) {}
-                                            }
+                                            },
+                                            colors = SwitchDefaults.colors(checkedThumbColor = cyanNeon)
                                         )
                                     }
-                                    Spacer(Modifier.height(8.dp))
-                                    val freqLabels = listOf("60Hz", "230Hz", "910Hz", "4kHz", "14kHz")
-                                    eqLevels.forEachIndexed { i, level ->
+                                    Divider(color = borderNeon)
+                                    val bandsLabel = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
+                                    eqLevels.forEachIndexed { index, level ->
                                         Column {
                                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                                Text(freqLabels.getOrElse(i) { "Band $i" }, color = Color.Gray, fontSize = 12.sp)
-                                                Text("${level / 100} dB", color = cyanNeon, fontSize = 12.sp)
+                                                Text(bandsLabel.getOrElse(index) { "Banda $index" }, color = Color.Gray, fontSize = 11.sp)
+                                                Text("${level / 100} dB", color = cyanNeon, fontSize = 11.sp)
                                             }
                                             Slider(
                                                 value = level.toFloat(),
-                                                onValueChange = { v ->
-                                                    eqLevels[i] = v.toInt()
-                                                    try {
-                                                        eq?.setBandLevel(i.toShort(), v.toInt().toShort())
-                                                    } catch (_: Exception) {}
+                                                onValueChange = { newValue ->
+                                                    eqLevels[index] = newValue.toInt()
+                                                    try { eq?.setBandLevel(index.toShort(), newValue.toInt().toShort()) } catch (_: Exception) {}
                                                 },
                                                 valueRange = -1500f..1500f,
-                                                colors = SliderDefaults.colors(activeTrackColor = cyanNeon, thumbColor = cyanNeon)
+                                                colors = SliderDefaults.colors(
+                                                    thumbColor = cyanNeon,
+                                                    activeTrackColor = cyanNeon
+                                                )
                                             )
                                         }
                                     }
-                                    Button(onClick = { showEq = false }, modifier = Modifier.align(Alignment.End)) {
-                                        Text("Concluído")
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showEq = false }) {
+                                    Text("FECHAR", color = cyanNeon, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        )
+                    }
+
+                    // Navegador de Arquivos (Directory Browser Overlay)
+                    if (showDirBrowser) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(bgDark)
+                                .padding(8.dp)
+                        ) {
+                            Column(Modifier.fillMaxSize()) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("EXPLORADOR DE ARQUIVOS", color = cyanNeon, fontWeight = FontWeight.Black, fontSize = 14.sp)
+                                    Text(
+                                        "✕",
+                                        color = Color.Red,
+                                        fontSize = 18.sp,
+                                        modifier = Modifier.clickable { showDirBrowser = false }
+                                    )
+                                }
+                                Text(currentDir.absolutePath, color = Color.Gray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Spacer(Modifier.height(8.dp))
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (currentDir.parentFile != null) {
+                                        Button(
+                                            onClick = {
+                                                currentDir = currentDir.parentFile!!
+                                                dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2A3A))
+                                        ) {
+                                            Text("⬆ Voltar Folder", fontSize = 11.sp, color = cyanNeon)
+                                        }
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val audioFiles = dirFiles.filter { it.isFile && isAudioFile(it) }
+                                            if (audioFiles.isNotEmpty()) {
+                                                songs = audioFiles
+                                                playAt(0)
+                                                showDirBrowser = false
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                                    ) {
+                                        Text("▶ Tocar Toda Pasta", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                Spacer(Modifier.height(8.dp))
+
+                                LazyColumn(
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                ) {
+                                    items(dirFiles) { file ->
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    if (file.isDirectory) {
+                                                        currentDir = file
+                                                        dirFiles = file.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+                                                    } else if (isAudioFile(file)) {
+                                                        val audioFiles = dirFiles.filter { it.isFile && isAudioFile(it) }
+                                                        songs = audioFiles
+                                                        val selectedIdx = audioFiles.indexOf(file)
+                                                        playAt(if (selectedIdx != -1) selectedIdx else 0)
+                                                        showDirBrowser = false
+                                                    }
+                                                }
+                                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(if (file.isDirectory) "📁 " else "🎵 ", fontSize = 16.sp)
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                file.name,
+                                                color = if (file.isDirectory) Color.White else cyanNeon,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Divider(color = Color(0xFF141C28), thickness = 0.5.dp)
                                     }
                                 }
                             }
@@ -701,125 +838,49 @@ class MainActivity : ComponentActivity() {
 
                     // Menu Lateral
                     if (showMenu) {
-                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f))) {
-                            Card(
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .clickable { showMenu = false }
+                        ) {
+                            Column(
                                 Modifier
-                                    .fillMaxWidth(0.85f)
                                     .fillMaxHeight()
-                                    .align(Alignment.CenterStart),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF10131A))
+                                    .width(240.dp)
+                                    .background(Color(0xFF0C1017))
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text("MENU JS HIFI V10", color = goldDial, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(16.dp))
-                                    Button(
-                                        onClick = {
-                                            val list = mutableListOf<File>()
-                                            ctx.contentResolver.query(
-                                                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                                                arrayOf(MediaStore.Audio.Media.DATA),
-                                                null,
-                                                null,
-                                                null
-                                            )?.use { c ->
-                                                val id = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
-                                                while (c.moveToNext()) {
-                                                    val path = c.getString(id) ?: continue
-                                                    val f = File(path)
-                                                    if (f.exists()) list.add(f)
-                                                }
-                                            }
-                                            songs = list
-                                            if (shuffleMode) buildShuffleQueue()
-                                            showMenu = false
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("📂 Todas as músicas", fontSize = 14.sp)
+                                Text("MENU HIFI", color = cyanNeon, fontSize = 16.sp, fontWeight = FontWeight.Black)
+                                Divider(color = borderNeon)
+                                Text(
+                                    "📁 Abrir Armazenamento",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        showMenu = false
+                                        showDirBrowser = true
                                     }
-                                    Spacer(Modifier.height(8.dp))
-                                    Button(
-                                        onClick = {
-                                            showDirBrowser = true
-                                            showMenu = false
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("📁 Abrir Diretório", fontSize = 14.sp)
+                                )
+                                Text(
+                                    "⚙ Equalizador",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        showMenu = false
+                                        showEq = true
                                     }
-                                    
-                                    Spacer(Modifier.weight(1f))
-                                    
-                                    // Botão de Fechar Aplicativo no Menu
-                                    Button(
-                                        onClick = { finishAffinity() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("🚪 Sair do Aplicativo", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    "🔄 Alternar VU Meter",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.clickable {
+                                        showMenu = false
+                                        vuModeAnalog = !vuModeAnalog
                                     }
-                                    
-                                    Spacer(Modifier.height(8.dp))
-                                    TextButton(onClick = { showMenu = false }, modifier = Modifier.fillMaxWidth()) {
-                                        Text("FECHAR MENU", color = Color.Gray, fontSize = 12.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Navegador de Pastas
-                    if (showDirBrowser) {
-                        Box(Modifier.fillMaxSize().background(Color(0xFF06070A))) {
-                            Column(Modifier.fillMaxSize().padding(12.dp)) {
-                                Text("📁 ${currentDir.absolutePath.takeLast(35)}", color = Color.White, fontSize = 12.sp)
-                                Spacer(Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick = { 
-                                        currentDir.parentFile?.let { 
-                                            currentDir = it 
-                                            dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                                        } 
-                                    }) {
-                                        Text("⬆ Voltar", fontSize = 14.sp)
-                                    }
-                                    Button(
-                                        onClick = {
-                                            songs = dirFiles.filter { !it.isDirectory && it.extension.lowercase() in listOf("mp3", "flac", "wav", "m4a") }
-                                            if (shuffleMode) buildShuffleQueue()
-                                            showDirBrowser = false
-                                        }
-                                    ) {
-                                        Text("▶ Tocar pasta", fontSize = 14.sp)
-                                    }
-                                }
-                                LazyColumn(Modifier.weight(1f)) {
-                                    items(dirFiles) { f ->
-                                        TextButton(
-                                            onClick = {
-                                                if (f.isDirectory) {
-                                                    currentDir = f
-                                                    dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                                                } else {
-                                                    songs = listOf(f)
-                                                    playAt(0)
-                                                    showDirBrowser = false
-                                                }
-                                            },
-                                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                (if (f.isDirectory) "📁 " else "🎵 ") + f.name,
-                                                color = Color.White,
-                                                fontSize = 14.sp,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-                                }
-                                Button(onClick = { showDirBrowser = false }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Fechar", fontSize = 14.sp)
-                                }
+                                )
                             }
                         }
                     }
@@ -827,17 +888,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
 
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            viz?.enabled = false
-            viz?.release()
-            eq?.release()
-            loud?.release()
-            player.release()
-        } catch (_: Exception) {}
-    }
+fun isAudioFile(file: File): Boolean {
+    val ext = file.extension.lowercase()
+    return ext in setOf("mp3", "flac", "wav", "m4a", "aac", "ogg", "opus")
+}
+
+fun formatMs(ms: Long): String {
+    val totalSec = ms / 1000
+    val min = totalSec / 60
+    val sec = totalSec % 60
+    return "%02d:%02d".format(min, sec)
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -845,107 +907,92 @@ class MainActivity : ComponentActivity() {
 fun MarqueeRender(text: String) {
     Text(
         text = text,
-        color = Color.White,
-        fontSize = 16.sp,
+        color = Color(0xFF00E5FF),
+        fontSize = 15.sp,
         fontWeight = FontWeight.Bold,
         maxLines = 1,
-        modifier = Modifier
-            .fillMaxWidth()
-            .basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp)
+        modifier = Modifier.basicMarquee()
     )
 }
 
 @Composable
 fun VUMeterRender(level: Float, label: String) {
-    val animLevel by animateFloatAsState(targetValue = level, animationSpec = tween(60), label = "vu")
-    Box(
-        Modifier
-            .size(132.dp)
-            .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(Color(0xFF2A2D36), Color(0xFF0F1117)), radius = 200f))
-            .border(3.dp, Color(0xFFC9A84C), CircleShape)
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val centerOffset = Offset(size.width / 2, size.height / 2 + 10)
-            val radius = size.minDimension / 2 - 14
-            drawCircle(
-                Brush.radialGradient(
-                    listOf(Color(0xFFFFF8E1), Color(0xFFFFE082).copy(alpha = 0.8f), Color(0xFF8D6E63)),
-                    center = centerOffset,
-                    radius = radius
-                ),
-                radius = radius - 2,
-                center = centerOffset
-            )
-            for (db in -20..3 step 2) {
-                val ang = -115 + ((db + 20) / 23f) * 230f
-                val rad = Math.toRadians(ang.toDouble() - 90)
-                val r1 = radius - 4
-                val r2 = if (db % 10 == 0) radius - 16 else radius - 10
-                val col = if (db >= 0) Color.Red else Color.Black
+    val animatedLevel by animateFloatAsState(targetValue = level.coerceIn(0.01f, 1.0f), animationSpec = tween(120))
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(2.dp))
+        Box(
+            Modifier
+                .size(width = 110.dp, height = 60.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF030508))
+                .border(1.dp, Color(0xFF1E2A3A), RoundedCornerShape(6.dp))
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2f, size.height * 1.1f)
+                val radius = size.height * 0.95f
+                
+                // Arcos de fundo dB
+                drawArc(
+                    color = Color(0xFF00E676),
+                    startAngle = 210f,
+                    sweepAngle = 80f,
+                    useCenter = false,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                )
+                drawArc(
+                    color = Color(0xFFFF1744),
+                    startAngle = 290f,
+                    sweepAngle = 40f,
+                    useCenter = false,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                )
+
+                // Ponteiro Analógico
+                val angleDeg = 210f + (animatedLevel * 120f)
+                val angleRad = Math.toRadians(angleDeg.toDouble())
+                val end = Offset(
+                    x = center.x + (radius * cos(angleRad)).toFloat(),
+                    y = center.y + (radius * sin(angleRad)).toFloat()
+                )
                 drawLine(
-                    col,
-                    centerOffset + Offset(cos(rad).toFloat() * r2, sin(rad).toFloat() * r2),
-                    centerOffset + Offset(cos(rad).toFloat() * r1, sin(rad).toFloat() * r1),
-                    if (db % 10 == 0) 1.6.dp.toPx() else 1.dp.toPx()
+                    color = Color(0xFFFF5252),
+                    start = center,
+                    end = end,
+                    strokeWidth = 2.5f,
+                    cap = StrokeCap.Round
                 )
             }
-            val ang = -115 + animLevel.coerceIn(0f, 1f) * 230f
-            val rad = Math.toRadians(ang.toDouble() - 90)
-            val x = centerOffset.x + cos(rad).toFloat() * (radius - 12)
-            val y = centerOffset.y + sin(rad).toFloat() * (radius - 12)
-            drawLine(Color.Black, centerOffset, Offset(x, y), strokeWidth = 2.8.dp.toPx(), cap = StrokeCap.Round)
-            drawCircle(Color(0xFF101010), 10.dp.toPx(), centerOffset)
-        }
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("VU", color = Color.Black.copy(alpha = 0.6f), fontSize = 8.sp, fontWeight = FontWeight.Bold)
-            Text(label, color = Color(0xFF8D6E63), fontSize = 10.sp, fontWeight = FontWeight.Black)
         }
     }
 }
 
 @Composable
 fun BargraphSegmented(level: Float, label: String) {
-    val db = (20 * log10(level.coerceAtLeast(0.0001f).toDouble())).toFloat().coerceIn(-10f, 3f)
-    val percent = ((db + 10f) / 13f).coerceIn(0f, 1f)
-    
-    Column {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(label, color = Color(0xFF00E5FF), fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(52.dp))
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(18.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color(0xFF0A0E15))
-            ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val segments = 26
-                    val segW = size.width / segments
-                    val activeSegs = (segments * percent).toInt()
-                    for (i in 0 until segments) {
-                        val x = i * segW
-                        val isActive = i < activeSegs
-                        val segPercent = (i + 1).toFloat() / segments.toFloat()
-                        
-                        val col = when {
-                            !isActive -> Color(0xFF141A24)
-                            segPercent <= 0.40f -> Color(0xFF00E676)
-                            segPercent <= 0.709f -> Color(0xFFFF9100)
-                            else -> Color(0xFFFF1744)
-                        }
-                        drawRect(col, topLeft = Offset(x + 1, 2f), size = Size(segW - 2, size.height - 4f))
-                    }
+    val segments = 20
+    val activeCount = (level.coerceIn(0f, 1f) * segments).toInt()
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(label, color = Color(0xFF00E5FF), fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(20.dp))
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            for (i in 0 until segments) {
+                val isActive = i < activeCount
+                val color = when {
+                    !isActive -> Color(0xFF121822)
+                    i < 13 -> Color(0xFF00E676)
+                    i < 17 -> Color(0xFFFF9100)
+                    else -> Color(0xFFFF1744)
                 }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(10.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(color)
+                )
             }
         }
     }
