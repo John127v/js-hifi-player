@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,7 +69,7 @@ data class SongTags(
     val format: String
 )
 
-// Suporte a mídias (Sem a extensão .opus)
+// Suporte a mídias
 fun isAudioFile(file: File): Boolean {
     val ext = file.extension.lowercase()
     return ext in setOf("mp3", "flac", "wav", "m4a", "mp4a", "wma", "aac", "ogg")
@@ -101,7 +102,8 @@ suspend fun getTags(file: File): SongTags = withContext(Dispatchers.IO) {
 
 class MainActivity : ComponentActivity() {
     private lateinit var player: ExoPlayer
-    private var eq: Equalizer? = null
+    private var eqLeft: Equalizer? = null
+    private var eqRight: Equalizer? = null
     private var loud: LoudnessEnhancer? = null
     private var viz: Visualizer? = null
 
@@ -131,11 +133,14 @@ class MainActivity : ComponentActivity() {
             var showDirBrowser by remember { mutableStateOf(false) }
             var showQueueView by remember { mutableStateOf(true) }
             var vuModeAnalog by remember { mutableStateOf(false) }
-            var vuLedMode by remember { mutableStateOf(0) } // 0: Bar+Peak, 1: Peak Only, 2: Center Out, 3: Outside In, 4: Fade Out
+            var vuLedMode by remember { mutableStateOf(0) }
             
             var currentDir by remember { mutableStateOf(File("/storage/emulated/0/Music")) }
             var dirFiles by remember { mutableStateOf(listOf<File>()) }
-            val eqLevels = remember { mutableStateListOf(0, 0, 0, 0, 0) }
+            
+            // Níveis independentes para Canal Esquerdo (L) e Canal Direito (R)
+            val eqLevelsLeft = remember { mutableStateListOf(0, 0, 0, 0, 0) }
+            val eqLevelsRight = remember { mutableStateListOf(0, 0, 0, 0, 0) }
             
             var repeatMode by remember { mutableStateOf(RepeatMode.ALL) }
             var shuffleMode by remember { mutableStateOf(false) }
@@ -148,8 +153,10 @@ class MainActivity : ComponentActivity() {
                     viz?.enabled = false
                     viz?.release()
                     viz = null
-                    eq?.release()
-                    eq = null
+                    eqLeft?.release()
+                    eqLeft = null
+                    eqRight?.release()
+                    eqRight = null
                     loud?.release()
                     loud = null
                 } catch (_: Exception) {}
@@ -175,7 +182,6 @@ class MainActivity : ComponentActivity() {
                                     var maxR = 0
                                     val half = waveform.size / 2
 
-                                    // Separação de canais L / R com medição de pico real
                                     for (i in 0 until half) {
                                         val valL = abs((waveform[i].toInt() and 0xFF) - 128)
                                         if (valL > maxL) maxL = valL
@@ -185,16 +191,13 @@ class MainActivity : ComponentActivity() {
                                         if (valR > maxR) maxR = valR
                                     }
 
-                                    // Filtro de ruído no silêncio (Corte para zerar se for apenas ruído de fundo)
                                     val noiseFloor = 3
                                     if (maxL <= noiseFloor) maxL = 0
                                     if (maxR <= noiseFloor) maxR = 0
 
-                                    // Normalização precisa (Pico máx ~128 em áudio PCM 8-bit sem sinalização)
                                     val rawL = (maxL.toFloat() / 120f).coerceIn(0f, 1f)
                                     val rawR = (maxR.toFloat() / 120f).coerceIn(0f, 1f)
 
-                                    // Ajuste de resposta dinâmica instantânea no ataque e queda suave
                                     vuLeft = if (rawL > vuLeft) rawL else (vuLeft * 0.78f).coerceAtLeast(0f)
                                     vuRight = if (rawR > vuRight) rawR else (vuRight * 0.78f).coerceAtLeast(0f)
                                 }
@@ -237,11 +240,19 @@ class MainActivity : ComponentActivity() {
                 }
 
                 try {
-                    eq = Equalizer(0, sessionId).apply { enabled = true }
+                    // Inicialização dos 2 equalizadores independentes
+                    eqLeft = Equalizer(0, sessionId).apply { enabled = true }
+                    eqRight = Equalizer(0, sessionId).apply { enabled = true }
                     loud = LoudnessEnhancer(sessionId).apply { enabled = highGain }
-                    val bands = eq?.numberOfBands ?: 0
-                    for (i in eqLevels.indices) {
-                        if (i < bands) eq?.setBandLevel(i.toShort(), eqLevels[i].toShort())
+
+                    val bandsL = eqLeft?.numberOfBands ?: 0
+                    for (i in eqLevelsLeft.indices) {
+                        if (i < bandsL) eqLeft?.setBandLevel(i.toShort(), eqLevelsLeft[i].toShort())
+                    }
+
+                    val bandsR = eqRight?.numberOfBands ?: 0
+                    for (i in eqLevelsRight.indices) {
+                        if (i < bandsR) eqRight?.setBandLevel(i.toShort(), eqLevelsRight[i].toShort())
                     }
                 } catch (_: Exception) {}
             }
@@ -443,7 +454,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Faixa Info Banner
+                        // Banner de Informações da Musica
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -467,7 +478,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // VU Meters com suporte a 5 Modos e Botão de Alternância
+                        // VU Meters
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -528,7 +539,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Espectro MicroLED (Intacto)
+                        // Espectro MicroLED
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -586,7 +597,7 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(Modifier.height(4.dp))
 
-                        // Barra de Progresso da Faixa
+                        // Barra de Progresso
                         Column(Modifier.fillMaxWidth()) {
                             Slider(
                                 value = if (dur > 0) pos.toFloat() / dur else 0f,
@@ -607,13 +618,12 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // CONTROLES DE REPRODUÇÃO + VOLUME INTEGRADOS
+                        // Controles de Reprodução + Volume
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            // Modos (Shuffle / Repeat)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
                                     text = if (shuffleMode) "🔀" else "🔀 OFF",
@@ -644,7 +654,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Botões de Navegação
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = "⏮",
@@ -677,7 +686,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Volume inline
                             Row(
                                 modifier = Modifier.width(130.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -749,14 +757,27 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Dialog Equalizador
+                    // Dialog de Equalizadores Lado a Lado (Esquerdo / Direito)
                     if (showEq) {
                         AlertDialog(
                             onDismissRequest = { showEq = false },
                             containerColor = Color(0xFF0F141C),
-                            title = { Text("EQUALIZADOR HIFI", color = cyanNeon, fontWeight = FontWeight.Black) },
+                            title = {
+                                Text(
+                                    "EQUALIZADOR DUAL DUAL-CHANNEL HIFI",
+                                    color = cyanNeon,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 14.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            },
                             text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    // Ganho Geral (Loudness)
                                     Row(
                                         Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -772,26 +793,104 @@ class MainActivity : ComponentActivity() {
                                             colors = SwitchDefaults.colors(checkedThumbColor = cyanNeon)
                                         )
                                     }
+                                    
                                     Divider(color = borderNeon)
-                                    val bandsLabel = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
-                                    eqLevels.forEachIndexed { index, level ->
-                                        Column {
-                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                                Text(bandsLabel.getOrElse(index) { "Banda $index" }, color = Color.Gray, fontSize = 11.sp)
-                                                Text("${level / 100} dB", color = cyanNeon, fontSize = 11.sp)
-                                            }
-                                            Slider(
-                                                value = level.toFloat(),
-                                                onValueChange = { newValue ->
-                                                    eqLevels[index] = newValue.toInt()
-                                                    try { eq?.setBandLevel(index.toShort(), newValue.toInt().toShort()) } catch (_: Exception) {}
-                                                },
-                                                valueRange = -1500f..1500f,
-                                                colors = SliderDefaults.colors(
-                                                    thumbColor = cyanNeon,
-                                                    activeTrackColor = cyanNeon
-                                                )
+                                    
+                                    val bandsLabel = listOf("60Hz", "230Hz", "910Hz", "3.6k", "14k")
+
+                                    // DOIS EQUALIZADORES LADO A LADO
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        // PAINEL CANAL ESQUERDO (LEFT)
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(end = 4.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xFF080B10))
+                                                .border(1.dp, Color(0xFF1E2A3A), RoundedCornerShape(8.dp))
+                                                .padding(6.dp)
+                                        ) {
+                                            Text(
+                                                "CANAL ESQUERDO (L)",
+                                                color = Color(0xFF00E676),
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.fillMaxWidth()
                                             )
+                                            Spacer(Modifier.height(4.dp))
+                                            
+                                            eqLevelsLeft.forEachIndexed { index, level ->
+                                                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                                    Row(
+                                                        Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Text(bandsLabel.getOrElse(index) { "B$index" }, color = Color.Gray, fontSize = 9.sp)
+                                                        Text("${level / 100}dB", color = Color(0xFF00E676), fontSize = 9.sp)
+                                                    }
+                                                    Slider(
+                                                        value = level.toFloat(),
+                                                        onValueChange = { newValue ->
+                                                            eqLevelsLeft[index] = newValue.toInt()
+                                                            try { eqLeft?.setBandLevel(index.toShort(), newValue.toInt().toShort()) } catch (_: Exception) {}
+                                                        },
+                                                        valueRange = -1500f..1500f,
+                                                        colors = SliderDefaults.colors(
+                                                            thumbColor = Color(0xFF00E676),
+                                                            activeTrackColor = Color(0xFF00E676)
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // PAINEL CANAL DIREITO (RIGHT)
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(start = 4.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xFF080B10))
+                                                .border(1.dp, Color(0xFF1E2A3A), RoundedCornerShape(8.dp))
+                                                .padding(6.dp)
+                                        ) {
+                                            Text(
+                                                "CANAL DIREITO (R)",
+                                                color = cyanNeon,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            Spacer(Modifier.height(4.dp))
+
+                                            eqLevelsRight.forEachIndexed { index, level ->
+                                                Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                                    Row(
+                                                        Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Text(bandsLabel.getOrElse(index) { "B$index" }, color = Color.Gray, fontSize = 9.sp)
+                                                        Text("${level / 100}dB", color = cyanNeon, fontSize = 9.sp)
+                                                    }
+                                                    Slider(
+                                                        value = level.toFloat(),
+                                                        onValueChange = { newValue ->
+                                                            eqLevelsRight[index] = newValue.toInt()
+                                                            try { eqRight?.setBandLevel(index.toShort(), newValue.toInt().toShort()) } catch (_: Exception) {}
+                                                        },
+                                                        valueRange = -1500f..1500f,
+                                                        colors = SliderDefaults.colors(
+                                                            thumbColor = cyanNeon,
+                                                            activeTrackColor = cyanNeon
+                                                        )
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -873,7 +972,7 @@ class MainActivity : ComponentActivity() {
                                                         currentDir = file
                                                         scope.launch { dirFiles = loadDirectoryFiles(file) }
                                                     } else if (isAudioFile(file)) {
-                                                        val audioFiles = dirFiles.filter { it.isFile && isAudioFile(it) }
+                                                        val audioFiles = dirFiles.filter { it.isFile && isAudioFile(file) }
                                                         songs = audioFiles
                                                         val selectedIdx = audioFiles.indexOf(file)
                                                         playAt(if (selectedIdx != -1) selectedIdx else 0)
@@ -939,7 +1038,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 )
                                 Text(
-                                    "⚙ Equalizador",
+                                    "⚙ Equalizador Dual L/R",
                                     color = Color.White,
                                     fontSize = 13.sp,
                                     modifier = Modifier.clickable {
@@ -1038,7 +1137,6 @@ fun VUMeterRender(level: Float, label: String) {
     }
 }
 
-// Renderização dos 5 Modos de VU Meter Segmentado (LED)
 @Composable
 fun BargraphSegmentedMode(level: Float, label: String, mode: Int) {
     val animatedLevel by animateFloatAsState(
@@ -1048,7 +1146,6 @@ fun BargraphSegmentedMode(level: Float, label: String, mode: Int) {
     val segments = 24
     val activeCount = (animatedLevel * segments).toInt()
     
-    // Suporte a retenção de pico flutuante (Peak Hold)
     var peakIndex by remember { mutableStateOf(0) }
     var fadeLevels by remember { mutableStateOf(FloatArray(segments) { 0f }) }
 
@@ -1060,7 +1157,6 @@ fun BargraphSegmentedMode(level: Float, label: String, mode: Int) {
             if (peakIndex > 0) peakIndex--
         }
 
-        // Atualização para o modo Decaimento Suave (Fade Out)
         val newFades = FloatArray(segments)
         for (i in 0 until segments) {
             if (i < activeCount) {
@@ -1087,29 +1183,24 @@ fun BargraphSegmentedMode(level: Float, label: String, mode: Int) {
                 }
 
                 val isActive = when (mode) {
-                    // Modo 0: Barra tradicional com pico no topo
                     0 -> i < activeCount || (i == peakIndex - 1 && peakIndex > 0)
-                    // Modo 1: Apenas o pico flutuante (Dot Peak)
                     1 -> i == peakIndex - 1 && peakIndex > 0
-                    // Modo 2: Do centro para as pontas
                     2 -> {
                         val mid = segments / 2
                         val dist = abs(i - mid)
                         dist < (activeCount / 2)
                     }
-                    // Modo 3: Das pontas para o centro
                     3 -> {
                         val edgeDist = if (i < segments / 2) i else (segments - 1 - i)
                         edgeDist < (activeCount / 2)
                     }
-                    // Modo 4: Barra com decaimento suave (Fade Out)
                     4 -> fadeLevels.getOrElse(i) { 0f } > 0f
                     else -> i < activeCount
                 }
 
                 val ledColor = when {
                     !isActive -> Color(0xFF101520)
-                    mode == 0 && i == peakIndex - 1 -> Color(0xFFFF1744) // Destaque no ponto de pico
+                    mode == 0 && i == peakIndex - 1 -> Color(0xFFFF1744)
                     mode == 1 -> Color(0xFF00E5FF)
                     mode == 4 -> baseColor.copy(alpha = fadeLevels.getOrElse(i) { 0f })
                     else -> baseColor
