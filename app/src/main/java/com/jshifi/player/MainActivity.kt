@@ -67,6 +67,19 @@ data class SongTags(
     val format: String
 )
 
+// Suporte a mídias (Sem a extensão .opus)
+fun isAudioFile(file: File): Boolean {
+    val ext = file.extension.lowercase()
+    return ext in setOf("mp3", "flac", "wav", "m4a", "mp4a", "wma", "aac", "ogg")
+}
+
+// Leitura de diretório rápida via Coroutines I/O
+suspend fun loadDirectoryFiles(dir: File): List<File> = withContext(Dispatchers.IO) {
+    if (!dir.exists() || !dir.isDirectory) return@withContext emptyList()
+    dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+}
+
+// Extração de Metadados em I/O
 suspend fun getTags(file: File): SongTags = withContext(Dispatchers.IO) {
     var mmr: MediaMetadataRetriever? = null
     try {
@@ -152,22 +165,30 @@ class MainActivity : ComponentActivity() {
                                 override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, rate: Int) {
                                     waveform?.let { bytes ->
                                         if (bytes.isEmpty()) return
-                                        var sumL = 0.0
-                                        var sumR = 0.0
-                                        val half = bytes.size / 2
-                                        for (i in 0 until half) {
-                                            val s = (bytes[i].toInt() and 0xFF) - 128
-                                            sumL += s * s
-                                        }
-                                        for (i in half until bytes.size) {
-                                            val s = (bytes[i].toInt() and 0xFF) - 128
-                                            sumR += s * s
-                                        }
-                                        val rmsL = (Math.sqrt(sumL / half) / 128.0).toFloat().coerceIn(0f, 1f)
-                                        val rmsR = (Math.sqrt(sumR / half) / 128.0).toFloat().coerceIn(0f, 1f)
                                         
-                                        vuLeft = vuLeft + 0.25f * (rmsL - vuLeft)
-                                        vuRight = vuRight + 0.25f * (rmsR - vuRight)
+                                        var maxL = 0
+                                        var maxR = 0
+                                        val half = bytes.size / 2
+
+                                        // Detecção de picos reais no Canal Esquerdo
+                                        for (i in 0 until half) {
+                                            val sample = Math.abs((bytes[i].toInt() and 0xFF) - 128)
+                                            if (sample > maxL) maxL = sample
+                                        }
+                                        
+                                        // Detecção de picos reais no Canal Direito
+                                        for (i in half until bytes.size) {
+                                            val sample = Math.abs((bytes[i].toInt() and 0xFF) - 128)
+                                            if (sample > maxR) maxR = sample
+                                        }
+
+                                        // Normalização responsiva para dinamizar o VU
+                                        val peakL = (maxL / 96.0f).coerceIn(0f, 1f)
+                                        val peakR = (maxR / 96.0f).coerceIn(0f, 1f)
+                                        
+                                        // Resposta de pico instantânea com decaimento suave
+                                        vuLeft = if (peakL > vuLeft) peakL else vuLeft * 0.82f
+                                        vuRight = if (peakR > vuRight) peakR else vuRight * 0.82f
                                     }
                                 }
 
@@ -181,7 +202,6 @@ class MainActivity : ComponentActivity() {
                                             val im = bytes[2 * i + 1].toInt()
                                             val magnitude = hypot(r.toDouble(), im.toDouble()).toFloat()
                                             
-                                            // Aumento do ganho nos graves (i < 4) para resposta imediata ao bumbo/bass
                                             val boost = when (i) {
                                                 0 -> 2.8f
                                                 1 -> 2.4f
@@ -193,7 +213,6 @@ class MainActivity : ComponentActivity() {
                                             val target = ((magnitude * boost) / 45f).coerceIn(0.01f, 1.0f)
                                             val current = fftValues.getOrElse(i) { 0.01f }
                                             
-                                            // Ataque rápido e queda suave dos LEDs
                                             bands15[i] = if (target > current) {
                                                 current + 0.65f * (target - current)
                                             } else {
@@ -234,15 +253,13 @@ class MainActivity : ComponentActivity() {
                 }
                 permissionLauncher.launch(perms.toTypedArray())
 
-                if (currentDir.exists() && currentDir.isDirectory) {
-                    dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
-                }
+                dirFiles = loadDirectoryFiles(currentDir)
 
                 val savedPath = prefs.getString("LAST_SONG_PATH", null)
                 val savedPos = prefs.getLong("LAST_SONG_POS", 0L)
                 if (savedPath != null) {
                     val file = File(savedPath)
-                    if (file.exists()) {
+                    if (file.exists() && isAudioFile(file)) {
                         songs = listOf(file)
                         idx = 0
                         currentTags = getTags(file)
@@ -376,7 +393,7 @@ class MainActivity : ComponentActivity() {
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(Color(0xFF0F1219))
                                 .border(1.dp, borderNeon, RoundedCornerShape(14.dp))
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Row(
                                 Modifier.fillMaxWidth(),
@@ -409,7 +426,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
 
                         // Faixa Info Banner
                         Box(
@@ -418,11 +435,11 @@ class MainActivity : ComponentActivity() {
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(Color(0xFF0D1118))
                                 .border(1.dp, cyanNeon.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                .padding(10.dp)
+                                .padding(8.dp)
                         ) {
                             Column {
                                 MarqueeRender(currentTags.title.ifEmpty { songs.getOrNull(idx)?.name ?: "JS HIFI - Selecione uma faixa" })
-                                Spacer(Modifier.height(4.dp))
+                                Spacer(Modifier.height(2.dp))
                                 Text(
                                     "${currentTags.artist} • ${currentTags.album} • ${currentTags.format} • ${currentTags.sampleRate}",
                                     color = cyanNeon,
@@ -433,16 +450,16 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
 
-                        // VU Meters (Alternável entre Analógico e Bargraph LED)
+                        // VU Meters
                         Box(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(cardBg)
                                 .border(1.dp, borderNeon, RoundedCornerShape(12.dp))
-                                .padding(8.dp)
+                                .padding(6.dp)
                                 .clickable { vuModeAnalog = !vuModeAnalog }
                         ) {
                             Column {
@@ -455,14 +472,14 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Text("Toque p/ alternar", color = Color.Gray, fontSize = 9.sp)
                                 }
-                                Spacer(Modifier.height(10.dp))
+                                Spacer(Modifier.height(4.dp))
                                 if (vuModeAnalog) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                                         VUMeterRender(vuLeft, "LEFT")
                                         VUMeterRender(vuRight, "RIGHT")
                                     }
                                 } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         BargraphSegmented(vuLeft, "L")
                                         BargraphSegmented(vuRight, "R")
                                     }
@@ -470,30 +487,30 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
 
-                        // Espectro de Frequências Reativo (Bargraph LED rápido)
+                        // Espectro MicroLED
                         Box(
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(cardBg)
                                 .border(1.dp, borderNeon, RoundedCornerShape(12.dp))
-                                .padding(8.dp)
+                                .padding(6.dp)
                         ) {
                             Column {
-                                Text("MICROLED SPECTRUM ANALYZER (RÁPIDO / GRAVES)", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                                Spacer(Modifier.height(6.dp))
+                                Text("MICROLED SPECTRUM ANALYZER", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Spacer(Modifier.height(4.dp))
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
-                                        .height(95.dp)
+                                        .height(75.dp)
                                         .clip(RoundedCornerShape(6.dp))
                                         .background(Color(0xFF05070B))
                                 ) {
                                     Canvas(Modifier.fillMaxSize()) {
                                         val bands = fftValues.size
-                                        val totalLedsHeight = 16
+                                        val totalLedsHeight = 14
                                         val colWidth = size.width / bands
                                         val ledSpacingY = 2f
                                         val ledSpacingX = 2.5f
@@ -528,80 +545,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
 
-                        // Modos de Reprodução & Botões
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = if (shuffleMode) "🔀 ON" else "🔀 OFF",
-                                    color = if (shuffleMode) cyanNeon else Color.Gray,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        shuffleMode = !shuffleMode
-                                        if (shuffleMode) buildShuffleQueue()
-                                    }
-                                )
-                                Text(
-                                    text = when (repeatMode) {
-                                        RepeatMode.OFF -> "🔁 OFF"
-                                        RepeatMode.ALL -> "🔁 ALL"
-                                        RepeatMode.ONE -> "🔂 1"
-                                    },
-                                    color = if (repeatMode != RepeatMode.OFF) cyanNeon else Color.Gray,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.clickable {
-                                        repeatMode = when (repeatMode) {
-                                            RepeatMode.OFF -> RepeatMode.ALL
-                                            RepeatMode.ALL -> RepeatMode.ONE
-                                            RepeatMode.ONE -> RepeatMode.OFF
-                                        }
-                                    }
-                                )
-                            }
-
-                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "⏮",
-                                    color = cyanNeon,
-                                    fontSize = 22.sp,
-                                    modifier = Modifier.clickable { playPrevious() }
-                                )
-                                Box(
-                                    Modifier
-                                        .size(42.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF0B1724))
-                                        .border(1.5.dp, cyanNeon, CircleShape)
-                                        .clickable {
-                                            if (player.isPlaying) {
-                                                player.pause()
-                                            } else {
-                                                if (idx == -1 && songs.isNotEmpty()) playAt(0) else player.play()
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(if (isPlay) "⏸" else "▶", color = cyanNeon, fontSize = 18.sp)
-                                }
-                                Text(
-                                    text = "⏭",
-                                    color = cyanNeon,
-                                    fontSize = 22.sp,
-                                    modifier = Modifier.clickable { playNext() }
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(6.dp))
-
-                        // Barra de Progresso
+                        // Barra de Progresso da Faixa
                         Column(Modifier.fillMaxWidth()) {
                             Slider(
                                 value = if (dur > 0) pos.toFloat() / dur else 0f,
@@ -617,36 +563,104 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(formatMs(pos), color = Color.Gray, fontSize = 10.sp)
-                                Text(formatMs(dur), color = Color.Gray, fontSize = 10.sp)
+                                Text(formatMs(pos), color = Color.Gray, fontSize = 9.sp)
+                                Text(formatMs(dur), color = Color.Gray, fontSize = 9.sp)
                             }
                         }
 
-                        Spacer(Modifier.height(4.dp))
-
-                        // Volume
+                        // CONTROLES DE REPRODUÇÃO + VOLUME INTEGRADOS
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("🔊", color = cyanNeon, fontSize = 12.sp)
-                            Slider(
-                                value = volume,
-                                onValueChange = { volume = it },
-                                modifier = Modifier.weight(1f),
-                                colors = SliderDefaults.colors(
-                                    thumbColor = cyanNeon,
-                                    activeTrackColor = cyanNeon,
-                                    inactiveTrackColor = Color(0xFF1E2A3A)
+                            // Modos (Shuffle / Repeat)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = if (shuffleMode) "🔀" else "🔀 OFF",
+                                    color = if (shuffleMode) cyanNeon else Color.Gray,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        shuffleMode = !shuffleMode
+                                        if (shuffleMode) buildShuffleQueue()
+                                    }
                                 )
-                            )
-                            Text("${(volume * 100).toInt()}%", color = cyanNeon, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = when (repeatMode) {
+                                        RepeatMode.OFF -> "🔁 OFF"
+                                        RepeatMode.ALL -> "🔁"
+                                        RepeatMode.ONE -> "🔂"
+                                    },
+                                    color = if (repeatMode != RepeatMode.OFF) cyanNeon else Color.Gray,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable {
+                                        repeatMode = when (repeatMode) {
+                                            RepeatMode.OFF -> RepeatMode.ALL
+                                            RepeatMode.ALL -> RepeatMode.ONE
+                                            RepeatMode.ONE -> RepeatMode.OFF
+                                        }
+                                    }
+                                )
+                            }
+
+                            // Botões de Navegação
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "⏮",
+                                    color = cyanNeon,
+                                    fontSize = 20.sp,
+                                    modifier = Modifier.clickable { playPrevious() }
+                                )
+                                Box(
+                                    Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF0B1724))
+                                        .border(1.5.dp, cyanNeon, CircleShape)
+                                        .clickable {
+                                            if (player.isPlaying) {
+                                                player.pause()
+                                            } else {
+                                                if (idx == -1 && songs.isNotEmpty()) playAt(0) else player.play()
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(if (isPlay) "⏸" else "▶", color = cyanNeon, fontSize = 16.sp)
+                                }
+                                Text(
+                                    text = "⏭",
+                                    color = cyanNeon,
+                                    fontSize = 20.sp,
+                                    modifier = Modifier.clickable { playNext() }
+                                )
+                            }
+
+                            // Volume inline
+                            Row(
+                                modifier = Modifier.width(130.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text("🔊", color = cyanNeon, fontSize = 10.sp)
+                                Slider(
+                                    value = volume,
+                                    onValueChange = { volume = it },
+                                    modifier = Modifier.weight(1f),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = cyanNeon,
+                                        activeTrackColor = cyanNeon,
+                                        inactiveTrackColor = Color(0xFF1E2A3A)
+                                    )
+                                )
+                            }
                         }
 
                         Spacer(Modifier.height(6.dp))
 
-                        // Fila de Reprodução Integrada
+                        // Fila de Reprodução Expandida
                         if (showQueueView) {
                             Text("FILA DE REPRODUÇÃO (${songs.size})", color = cyanNeon, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(4.dp))
@@ -696,7 +710,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Dialog de Equalizador
+                    // Dialog do Equalizador
                     if (showEq) {
                         AlertDialog(
                             onDismissRequest = { showEq = false },
@@ -751,7 +765,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // Navegador de Arquivos
+                    // Dialog Navegador de Arquivos
                     if (showDirBrowser) {
                         Box(
                             Modifier
@@ -781,7 +795,7 @@ class MainActivity : ComponentActivity() {
                                         Button(
                                             onClick = {
                                                 currentDir = currentDir.parentFile!!
-                                                dirFiles = currentDir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+                                                scope.launch { dirFiles = loadDirectoryFiles(currentDir) }
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E2A3A))
                                         ) {
@@ -818,7 +832,7 @@ class MainActivity : ComponentActivity() {
                                                 .clickable {
                                                     if (file.isDirectory) {
                                                         currentDir = file
-                                                        dirFiles = file.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
+                                                        scope.launch { dirFiles = loadDirectoryFiles(file) }
                                                     } else if (isAudioFile(file)) {
                                                         val audioFiles = dirFiles.filter { it.isFile && isAudioFile(it) }
                                                         songs = audioFiles
@@ -912,11 +926,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-fun isAudioFile(file: File): Boolean {
-    val ext = file.extension.lowercase()
-    return ext in setOf("mp3", "flac", "wav", "m4a", "aac", "ogg", "opus")
-}
-
 fun formatMs(ms: Long): String {
     val totalSec = ms / 1000
     val min = totalSec / 60
@@ -941,14 +950,14 @@ fun MarqueeRender(text: String) {
 fun VUMeterRender(level: Float, label: String) {
     val animatedLevel by animateFloatAsState(
         targetValue = level.coerceIn(0.01f, 1.0f),
-        animationSpec = tween(durationMillis = 80)
+        animationSpec = tween(durationMillis = 35)
     )
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(2.dp))
         Box(
             Modifier
-                .size(width = 110.dp, height = 65.dp)
+                .size(width = 110.dp, height = 58.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(0xFF030508))
                 .border(1.dp, Color(0xFF1E2A3A), RoundedCornerShape(6.dp))
@@ -957,7 +966,6 @@ fun VUMeterRender(level: Float, label: String) {
                 val center = Offset(size.width / 2f, size.height * 1.15f)
                 val radius = size.height * 0.95f
                 
-                // Mostrador do VU
                 drawArc(
                     color = Color(0xFF00E676),
                     startAngle = 210f,
@@ -973,7 +981,6 @@ fun VUMeterRender(level: Float, label: String) {
                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
                 )
 
-                // Agulha Analógica Reativa
                 val angleDeg = 210f + (animatedLevel * 120f)
                 val angleRad = Math.toRadians(angleDeg.toDouble())
                 val end = Offset(
@@ -994,8 +1001,13 @@ fun VUMeterRender(level: Float, label: String) {
 
 @Composable
 fun BargraphSegmented(level: Float, label: String) {
+    val animatedLevel by animateFloatAsState(
+        targetValue = level.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 35)
+    )
     val segments = 20
-    val activeCount = (level.coerceIn(0f, 1f) * segments).toInt()
+    val activeCount = (animatedLevel * segments).toInt()
+    
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
